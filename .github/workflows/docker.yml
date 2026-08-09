@@ -1,0 +1,103 @@
+name: docker
+
+# One job, two modes. On a pull request it builds without pushing, so a broken
+# Dockerfile fails the PR instead of the merge; on a merge to main it builds the same
+# target and pushes it. Both share a buildx cache scope, so the merge build is mostly
+# cache hits from whatever the PR already built.
+#
+# Nothing publishes from a pull request: a fork must not be able to move :latest.
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  push:
+    branches:
+      - main
+    # A change to any of these cannot alter the image, and republishing would move
+    # :latest to a new digest for nothing - which, with :latest as the only tag,
+    # silently invalidates any digest recorded for a rollback. Use workflow_dispatch
+    # to publish deliberately.
+    paths-ignore:
+      - '**.md'
+      - .github/workflows/code-quality.yml
+      - .github/workflows/tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never abandon a half-finished push. On pull requests there is nothing to leave
+  # half-done, but a single group keeps the behaviour easy to reason about.
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build${{ github.event_name == 'pull_request' && '' || ' and push' }} the image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request' || ! github.event.pull_request.draft
+
+    permissions:
+      contents: read
+      # Only actually used on the push path, but permissions cannot be set per-step.
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Schema and interpolation check only. Compose defers `image:` and networks to
+      # runtime, so this proves the file parses and every variable resolves - not that
+      # the stack would come up. The .env is a throwaway: compose treats a missing
+      # env_file as a hard load error, and the real one never leaves the host.
+      - name: Validate compose.yml
+        run: |
+          cp .env.example .env
+          docker compose -f compose.yml config -q
+          rm -f .env
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          # Derived rather than hardcoded so a fork publishes into its own namespace
+          # instead of failing against this one. The action lowercases it for GHCR.
+          images: ghcr.io/${{ github.repository }}
+          # A single moving tag. Rolling back means pinning a digest from this run's
+          # log; add type=sha here if that becomes a habit worth tagging for.
+          tags: type=raw,value=latest
+          # image.source is what makes GHCR show the package as belonging to this
+          # repo, and inherit its access settings.
+          labels: |
+            org.opencontainers.image.title=ytsummarise
+
+      - name: Build${{ github.event_name == 'pull_request' && '' || ' and push' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          target: prod
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=ytsummarise
+          cache-to: type=gha,mode=max,scope=ytsummarise

@@ -13,6 +13,15 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
+    # `composer setup` copies .env.example and runs `migrate --force`, and
+    # .env.example points at the local Postgres, which no runner has. These override
+    # it for that one step. The test run itself is unaffected either way: phpunit.xml
+    # pins the same two values, which is what keeps this workflow free of a database
+    # service container.
+    env:
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

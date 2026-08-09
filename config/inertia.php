@@ -15,11 +15,12 @@ return [
     |
     */
 
+    /*
+     * Keep this key even though it is false: Inertia reads it as
+     * config('inertia.ssr.enabled', true), so deleting the block enables SSR.
+     */
     'ssr' => [
-        'enabled' => true,
-        'url' => 'http://127.0.0.1:13714',
-        // 'bundle' => base_path('bootstrap/ssr/ssr.mjs'),
-
+        'enabled' => false,
     ],
 
     /*

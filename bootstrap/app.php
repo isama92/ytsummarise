@@ -15,6 +15,14 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        /*
+         * Traefik terminates TLS and reaches the container over plain HTTP, so without
+         * this Laravel reads the request as insecure: route() and asset() emit http://
+         * URLs and cookies marked secure never come back. Trusting every proxy is safe
+         * here because nothing but Traefik can reach the container's port.
+         */
+        $middleware->trustProxies(at: '*');
+
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
 
         $middleware->web(append: [
