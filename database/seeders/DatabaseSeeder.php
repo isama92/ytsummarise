@@ -18,9 +18,12 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         /*
-         * The email has to match an account in Authentik for this user to be reachable:
-         * sign in links on email, so seeding one that Authentik does not know about
-         * creates a row nobody can ever log in as.
+         * With AUTH_ENABLED left on, the email has to match an account in Authentik for
+         * this user to be reachable: sign in links on email, so seeding one Authentik
+         * does not know about creates a row nobody can ever log in as.
+         *
+         * With AUTH_ENABLED off this is simply who you are, and seeding it means the
+         * first-user setup form only appears after a migrate:fresh without --seed.
          */
         User::factory()->create([
             'name' => 'Test User',

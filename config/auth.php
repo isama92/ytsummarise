@@ -6,6 +6,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Authentication Enabled
+    |--------------------------------------------------------------------------
+    |
+    | When this is false the application asks nobody to sign in: every visitor
+    | is authenticated as the first user in the database, and when there is no
+    | user yet they are asked for a name and an email to create one. It is how
+    | you run this application locally without an Authentik client, and how a
+    | single user can self host it without an identity provider at all.
+    |
+    | This is honoured in every environment, production included. Turning it
+    | off on a reachable deployment means anyone who can open the site is that
+    | first user, so only do it behind a private network, a VPN, or a proxy
+    | that authenticates on the application's behalf.
+    |
+    | Only a literal AUTH_ENABLED=false turns authentication off. An empty,
+    | misspelled or otherwise unparseable value leaves it on, so a typo in a
+    | deployed .env can never be what opens the application up.
+    |
+    */
+
+    'enabled' => env('AUTH_ENABLED', true) !== false,
+
+    /*
+    |--------------------------------------------------------------------------
     | Authentication Defaults
     |--------------------------------------------------------------------------
     |

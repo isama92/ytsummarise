@@ -1,7 +1,9 @@
 <?php
 
+use App\Http\Middleware\AuthenticateAsFirstUser;
 use App\Http\Middleware\HandleAppearance;
 use App\Http\Middleware\HandleInertiaRequests;
+use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -29,11 +31,29 @@ return Application::configure(basePath: dirname(__DIR__))
          */
         $middleware->encryptCookies(except: ['appearance']);
 
+        /*
+         * AuthenticateAsFirstUser has to come before HandleInertiaRequests: the Inertia
+         * middleware shares the authenticated user before handing the request on, so
+         * signing in after it would render the page as a guest.
+         */
         $middleware->web(append: [
+            AuthenticateAsFirstUser::class,
             HandleAppearance::class,
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
         ]);
+
+        /*
+         * Listing it in the web group is not enough. SortedMiddleware hoists every
+         * middleware named in the priority map, so the route's `auth` middleware would
+         * otherwise be pulled up to just after ShareErrorsFromSession and run first,
+         * bouncing the visitor to /login before anyone had been signed in. Naming ours
+         * in the map immediately before it is what pins the order.
+         */
+        $middleware->prependToPriorityList(
+            before: AuthenticatesRequests::class,
+            prepend: AuthenticateAsFirstUser::class,
+        );
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

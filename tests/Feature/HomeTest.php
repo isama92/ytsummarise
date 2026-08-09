@@ -18,6 +18,15 @@ test('the home page greets the authenticated user by name', function (): void {
         );
 });
 
+test('the home page reports that authentication is on', function (): void {
+    $this->actingAs(User::factory()->create())
+        ->get(route('home'))
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('welcome')
+            ->where('auth.enabled', true),
+        );
+});
+
 test('the user payload shared with the page hides the remember token', function (): void {
     $this->actingAs(User::factory()->create())
         ->get(route('home'))

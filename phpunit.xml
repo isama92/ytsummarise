@@ -20,6 +20,7 @@
     <php>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="AUTH_ENABLED" value="true"/>
         <env name="AUTHENTIK_NAME" value="Authentik"/>
         <env name="AUTHENTIK_BASE_URL" value="https://authentik.test"/>
         <env name="AUTHENTIK_CLIENT_ID" value="test-client-id"/>

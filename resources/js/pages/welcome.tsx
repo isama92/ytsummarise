@@ -18,19 +18,25 @@ export default function Welcome() {
                     Hello, {auth.user?.name}
                 </h1>
 
-                <Form {...logout.form()}>
-                    {({ processing }) => (
-                        <Button
-                            type="submit"
-                            variant="outline"
-                            disabled={processing}
-                            data-test="logout-button"
-                        >
-                            {processing && <Spinner />}
-                            Log out
-                        </Button>
-                    )}
-                </Form>
+                {/*
+                 * With authentication off there is nothing to log out of: the next
+                 * request would sign the same user straight back in.
+                 */}
+                {auth.enabled && (
+                    <Form {...logout.form()}>
+                        {({ processing }) => (
+                            <Button
+                                type="submit"
+                                variant="outline"
+                                disabled={processing}
+                                data-test="logout-button"
+                            >
+                                {processing && <Spinner />}
+                                Log out
+                            </Button>
+                        )}
+                    </Form>
+                )}
             </div>
         </>
     );

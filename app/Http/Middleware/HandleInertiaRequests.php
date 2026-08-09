@@ -45,6 +45,7 @@ class HandleInertiaRequests extends Middleware
             'name' => config('app.name'),
             'auth' => [
                 'user' => $request->user(),
+                'enabled' => config('auth.enabled'),
             ],
         ];
     }
