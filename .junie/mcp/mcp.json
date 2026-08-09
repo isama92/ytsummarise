@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "laravel-boost": {
+            "command": "/home/isama92/.local/share/php/bin/php",
+            "args": [
+                "/home/isama92/Dev/ytsummarise/artisan",
+                "boost:mcp"
+            ]
+        }
+    }
+}
