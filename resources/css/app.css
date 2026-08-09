@@ -12,7 +12,24 @@
         'Instrument Sans', ui-sans-serif, system-ui, sans-serif,
         'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
         'Noto Color Emoji';
+}
 
+/*
+ * `inline` is load bearing, and it is what the shadcn CLI emits for Tailwind v4.
+ * Without it Tailwind emits a second variable onto `:root` that points at the one
+ * below, and the utility reads that instead - so the value is substituted once at
+ * the root element and only the already resolved result inherits downwards, which
+ * means a `.dark` scope that is not the root element would have no effect. With
+ * `inline`, `bg-card` compiles straight to `background-color: var(--card)`,
+ * resolved per element, so any `.dark` subtree themes correctly.
+ *
+ * Keep literal token names out of these comments: Tailwind scans this file for
+ * candidates too, and a name written here is enough to emit a dead declaration.
+ *
+ * `--font-sans` above stays in a plain `@theme` block because it is a literal
+ * rather than a reference to a custom property.
+ */
+@theme inline {
     --radius-lg: var(--radius);
     --radius-md: calc(var(--radius) - 2px);
     --radius-sm: calc(var(--radius) - 4px);
@@ -50,91 +67,210 @@
     --color-chart-3: var(--chart-3);
     --color-chart-4: var(--chart-4);
     --color-chart-5: var(--chart-5);
-
-    --color-sidebar: var(--sidebar);
-    --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-    --color-sidebar-accent: var(--sidebar-accent);
-    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-    --color-sidebar-border: var(--sidebar-border);
-    --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/*
+ * Layer 1 - the raw Catppuccin palettes, verbatim from upstream.
+ *
+ * Deliberately kept OUT of `@theme` so they generate no utilities. A class like
+ * `bg-ctp-base` would look flavour neutral but resolve to #eff1f5 in Latte and
+ * #303446 in Frappe, which reads like a fixed colour and behaves like a semantic
+ * one. Nothing in a component should read `--ctp-*` directly: go through the
+ * semantic tokens below so a flavour swap stays a one file change.
+ *
+ * Escape hatch for a genuine one off is an arbitrary value pointing at the
+ * palette variable directly, which is deliberately ugly enough to make you
+ * think first. It is not spelled out here because Tailwind scans this file for
+ * candidates, so writing the class would emit a dead rule for it.
+ *
+ * https://catppuccin.com/palette
+ */
+
+/* Catppuccin Latte */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --destructive-foreground: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.87 0 0);
-    --chart-1: oklch(0.646 0.222 41.116);
-    --chart-2: oklch(0.6 0.118 184.704);
-    --chart-3: oklch(0.398 0.07 227.392);
-    --chart-4: oklch(0.828 0.189 84.429);
-    --chart-5: oklch(0.769 0.188 70.08);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.87 0 0);
+    --ctp-rosewater: #dc8a78;
+    --ctp-flamingo: #dd7878;
+    --ctp-pink: #ea76cb;
+    --ctp-mauve: #8839ef;
+    --ctp-red: #d20f39;
+    --ctp-maroon: #e64553;
+    --ctp-peach: #fe640b;
+    --ctp-yellow: #df8e1d;
+    --ctp-green: #40a02b;
+    --ctp-teal: #179299;
+    --ctp-sky: #04a5e5;
+    --ctp-sapphire: #209fb5;
+    --ctp-blue: #1e66f5;
+    --ctp-lavender: #7287fd;
+    --ctp-text: #4c4f69;
+    --ctp-subtext1: #5c5f77;
+    --ctp-subtext0: #6c6f85;
+    --ctp-overlay2: #7c7f93;
+    --ctp-overlay1: #8c8fa1;
+    --ctp-overlay0: #9ca0b0;
+    --ctp-surface2: #acb0be;
+    --ctp-surface1: #bcc0cc;
+    --ctp-surface0: #ccd0da;
+    --ctp-base: #eff1f5;
+    --ctp-mantle: #e6e9ef;
+    --ctp-crust: #dce0e8;
 }
 
+/* Catppuccin Frappe */
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.145 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.145 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.985 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.396 0.141 25.723);
-    --destructive-foreground: oklch(0.637 0.237 25.331);
-    --border: oklch(0.269 0 0);
-    --input: oklch(0.269 0 0);
-    --ring: oklch(0.439 0 0);
-    --chart-1: oklch(0.488 0.243 264.376);
-    --chart-2: oklch(0.696 0.17 162.48);
-    --chart-3: oklch(0.769 0.188 70.08);
-    --chart-4: oklch(0.627 0.265 303.9);
-    --chart-5: oklch(0.645 0.246 16.439);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.985 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(0.269 0 0);
-    --sidebar-ring: oklch(0.439 0 0);
+    --ctp-rosewater: #f2d5cf;
+    --ctp-flamingo: #eebebe;
+    --ctp-pink: #f4b8e4;
+    --ctp-mauve: #ca9ee6;
+    --ctp-red: #e78284;
+    --ctp-maroon: #ea999c;
+    --ctp-peach: #ef9f76;
+    --ctp-yellow: #e5c890;
+    --ctp-green: #a6d189;
+    --ctp-teal: #81c8be;
+    --ctp-sky: #99d1db;
+    --ctp-sapphire: #85c1dc;
+    --ctp-blue: #8caaee;
+    --ctp-lavender: #babbf1;
+    --ctp-text: #c6d0f5;
+    --ctp-subtext1: #b5bfe2;
+    --ctp-subtext0: #a5adce;
+    --ctp-overlay2: #949cbb;
+    --ctp-overlay1: #838ba7;
+    --ctp-overlay0: #737994;
+    --ctp-surface2: #626880;
+    --ctp-surface1: #51576d;
+    --ctp-surface0: #414559;
+    --ctp-base: #303446;
+    --ctp-mantle: #292c3c;
+    --ctp-crust: #232634;
+}
+
+/*
+ * Layer 2 - shadcn semantic tokens.
+ *
+ * Every value is a palette alias rather than a hex, so the hex values live in
+ * exactly one place per flavour. Both flavours are spelled out in full even
+ * where the palette name is the same, so either one reads top to bottom without
+ * holding the other in your head.
+ *
+ * Surface ramp, page to raised:
+ *   Latte   base -> mantle   -> surface0   (raised surfaces get DARKER)
+ *   Frappe  base -> surface0 -> surface1   (raised surfaces get LIGHTER)
+ * The Latte direction is the Catppuccin literal reading and is intentional.
+ */
+
+/* Latte */
+:root {
+    --radius: 0.625rem;
+
+    --background: var(--ctp-base);
+    --foreground: var(--ctp-text);
+
+    --card: var(--ctp-mantle);
+    --card-foreground: var(--ctp-text);
+
+    --popover: var(--ctp-mantle);
+    --popover-foreground: var(--ctp-text);
+
+    /*
+     * Rosewater in both flavours, by design. In Latte that puts `text` on
+     * `rosewater` at 3.02:1, below the WCAG AA floor of 4.5:1 for normal text.
+     * This is a deliberate, accepted trade off in favour of palette fidelity;
+     * `text` is the darkest neutral Latte has, so no in palette choice improves
+     * it. Do not use the default button variant for anything a user must be
+     * able to read to complete a task - `secondary` and `outline` are there.
+     */
+    --primary: var(--ctp-rosewater);
+    --primary-foreground: var(--ctp-text);
+
+    --secondary: var(--ctp-surface0);
+    --secondary-foreground: var(--ctp-text);
+
+    --muted: var(--ctp-surface0);
+    /* subtext0 is the literal choice but lands at 4.37:1 on base; this is 5.53:1 */
+    --muted-foreground: var(--ctp-subtext1);
+
+    --accent: var(--ctp-surface0);
+    --accent-foreground: var(--ctp-text);
+
+    --destructive: var(--ctp-red);
+    /* Was a copy of --destructive in the stock file, i.e. red text on red */
+    --destructive-foreground: var(--ctp-base);
+
+    --border: var(--ctp-surface0);
+    /*
+     * --input is a BORDER colour in shadcn v4, never a surface: input.tsx is
+     * `border-input bg-transparent` and the outline button is
+     * `border border-input bg-background`. Pointing it at mantle would give a
+     * 1.08:1 outline against the page, so it tracks --border instead.
+     */
+    --input: var(--ctp-surface0);
+    /*
+     * Rosewater on base is 2.34:1, which misses the 3:1 WCAG 1.4.11 bar for a
+     * focus indicator. Accepted alongside --primary above. Switch to
+     * `var(--ctp-blue)` (4.34:1) if that ever needs to comply.
+     */
+    --ring: var(--ctp-rosewater);
+
+    /* Well spread hues, avoiding red and rosewater - already spoken for */
+    --chart-1: var(--ctp-blue);
+    --chart-2: var(--ctp-green);
+    --chart-3: var(--ctp-peach);
+    --chart-4: var(--ctp-mauve);
+    --chart-5: var(--ctp-teal);
+}
+
+/* Frappe */
+.dark {
+    --background: var(--ctp-base);
+    --foreground: var(--ctp-text);
+
+    --card: var(--ctp-surface0);
+    --card-foreground: var(--ctp-text);
+
+    --popover: var(--ctp-surface0);
+    --popover-foreground: var(--ctp-text);
+
+    /* 8.91:1 - the dark flavour has no contrast problem with rosewater */
+    --primary: var(--ctp-rosewater);
+    --primary-foreground: var(--ctp-base);
+
+    --secondary: var(--ctp-surface1);
+    --secondary-foreground: var(--ctp-text);
+
+    --muted: var(--ctp-surface1);
+    --muted-foreground: var(--ctp-subtext0);
+
+    --accent: var(--ctp-surface1);
+    --accent-foreground: var(--ctp-text);
+
+    --destructive: var(--ctp-red);
+    --destructive-foreground: var(--ctp-base);
+
+    --border: var(--ctp-surface1);
+    --input: var(--ctp-surface1);
+    --ring: var(--ctp-rosewater);
+
+    --chart-1: var(--ctp-blue);
+    --chart-2: var(--ctp-green);
+    --chart-3: var(--ctp-peach);
+    --chart-4: var(--ctp-mauve);
+    --chart-5: var(--ctp-teal);
 }
 
 @layer base {
     * {
         @apply border-border;
+    }
+
+    /*
+     * Also on `html` so the overscroll area matches, and so a first paint value
+     * in app.blade.php that has drifted is corrected the moment this stylesheet
+     * lands rather than persisting for the whole page.
+     */
+    html {
+        @apply bg-background;
     }
 
     body {

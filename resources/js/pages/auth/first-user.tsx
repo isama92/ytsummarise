@@ -1,8 +1,13 @@
 import { Form, Head } from '@inertiajs/react';
 import FirstUserController from '@/actions/App/Http/Controllers/Auth/FirstUserController';
 import AppearanceToggle from '@/components/appearance-toggle';
-import InputError from '@/components/input-error';
 import { Button } from '@/components/ui/button';
+import {
+    Field,
+    FieldError,
+    FieldGroup,
+    FieldLabel,
+} from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 
@@ -19,41 +24,37 @@ export default function FirstUser() {
             >
                 {({ processing, errors }) => (
                     <>
-                        <div className="grid gap-2">
-                            <label
-                                htmlFor="name"
-                                className="text-sm font-medium"
-                            >
-                                Name
-                            </label>
-                            <Input
-                                id="name"
-                                name="name"
-                                required
-                                autoFocus
-                                autoComplete="name"
-                                placeholder="Your name"
-                            />
-                            <InputError message={errors.name} />
-                        </div>
+                        <FieldGroup>
+                            <Field data-invalid={!!errors.name}>
+                                <FieldLabel htmlFor="name">Name</FieldLabel>
+                                <Input
+                                    id="name"
+                                    name="name"
+                                    required
+                                    autoFocus
+                                    autoComplete="name"
+                                    placeholder="Your name"
+                                    aria-invalid={!!errors.name}
+                                />
+                                <FieldError>{errors.name}</FieldError>
+                            </Field>
 
-                        <div className="grid gap-2">
-                            <label
-                                htmlFor="email"
-                                className="text-sm font-medium"
-                            >
-                                Email address
-                            </label>
-                            <Input
-                                id="email"
-                                type="email"
-                                name="email"
-                                required
-                                autoComplete="email"
-                                placeholder="email@example.com"
-                            />
-                            <InputError message={errors.email} />
-                        </div>
+                            <Field data-invalid={!!errors.email}>
+                                <FieldLabel htmlFor="email">
+                                    Email address
+                                </FieldLabel>
+                                <Input
+                                    id="email"
+                                    type="email"
+                                    name="email"
+                                    required
+                                    autoComplete="email"
+                                    placeholder="email@example.com"
+                                    aria-invalid={!!errors.email}
+                                />
+                                <FieldError>{errors.email}</FieldError>
+                            </Field>
+                        </FieldGroup>
 
                         <Button
                             type="submit"

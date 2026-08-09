@@ -6,10 +6,13 @@
 # The build runs on Debian and the runtime on Alpine, which is the one thing here
 # worth understanding before changing anything:
 #
-#   - The BUILD needs glibc. .npmrc sets ignore-scripts=true and package.json pins
-#     @rollup/rollup-linux-x64-gnu, @tailwindcss/oxide-linux-x64-gnu and
-#     lightningcss-linux-x64-gnu - all glibc builds, with no musl counterpart listed.
-#     On Alpine `vite build` dies on a missing native binary.
+#   - The BUILD runs on Debian, i.e. glibc. rolldown (which vite 8 uses in place of
+#     rollup), @tailwindcss/oxide and lightningcss are all native, and npm selects
+#     each one's platform binary from that package's own os/cpu-gated
+#     optionalDependencies. .npmrc sets ignore-scripts=true, which is fine because
+#     none of them need a postinstall step to do it. package.json used to pin the
+#     glibc binaries by hand; those pins went away with the move to vite 8, which
+#     left the rollup ones pointing at a package no longer in the tree at all.
 #
 #   - The RUNTIME does not. Nothing compiled crosses the boundary: PHP extensions are
 #     installed per-stage, node never enters `prod`, and composer's output is pure PHP.
@@ -68,8 +71,8 @@ COPY --from=node:24-bookworm-slim /usr/local/bin/ /usr/local/bin/
 COPY --from=node:24-bookworm-slim /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 
 # Ahead of the source copy so `npm ci` is keyed on the lock file only. .npmrc comes
-# along because it sets ignore-scripts=true, which is what makes the pinned native
-# binaries in optionalDependencies the ones that actually get used.
+# along because it sets ignore-scripts=true, so nothing here may depend on a
+# package's postinstall step running.
 COPY package.json package-lock.json .npmrc ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 

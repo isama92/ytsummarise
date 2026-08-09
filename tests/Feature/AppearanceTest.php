@@ -22,3 +22,23 @@ test('no appearance cookie leaves the choice to the browser', function (): void 
         ->assertDontSee('class="dark"', escape: false)
         ->assertSee('prefers-color-scheme: dark', escape: false);
 });
+
+/*
+ * The layout paints a background before app.css is fetched, so the two files each
+ * carry their own copy of the Catppuccin `base` colours. Nothing but this test stops
+ * them drifting, and the symptom of drift is a colour flash on every cold load.
+ */
+test('the first paint colours in the layout match the theme stylesheet', function (): void {
+    $css = (string) file_get_contents(resource_path('css/app.css'));
+    $blade = (string) file_get_contents(resource_path('views/app.blade.php'));
+
+    preg_match('/:root\s*\{[^}]*--ctp-base:\s*(#[0-9a-f]{6})/i', $css, $latte);
+    preg_match('/\.dark\s*\{[^}]*--ctp-base:\s*(#[0-9a-f]{6})/i', $css, $frappe);
+
+    expect($latte)->toHaveKey(1)
+        ->and($frappe)->toHaveKey(1);
+
+    expect($blade)
+        ->toContain("background-color: {$latte[1]};")
+        ->toContain("background-color: {$frappe[1]};");
+});

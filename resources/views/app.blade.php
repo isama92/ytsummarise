@@ -15,14 +15,22 @@
             })();
         </script>
 
-        {{-- Inline style to set the HTML background color based on our theme in app.css --}}
+        {{-- Paints the page before app.css is fetched, so there is no flash. These are
+             Catppuccin Latte `base` and Frappe `base` and MUST match --ctp-base in
+             resources/css/app.css; AppearanceTest guards that they still do.
+
+             color-scheme is set here too because initializeTheme() only runs once the
+             bundle has parsed, so without it the native scrollbars and form control
+             chrome render light on a dark page until hydration. --}}
         <style>
             html {
-                background-color: oklch(1 0 0);
+                background-color: #eff1f5;
+                color-scheme: light;
             }
 
             html.dark {
-                background-color: oklch(0.145 0 0);
+                background-color: #303446;
+                color-scheme: dark;
             }
         </style>
 

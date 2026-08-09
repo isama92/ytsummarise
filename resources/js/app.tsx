@@ -9,7 +9,9 @@ createInertiaApp({
     layout: (name) => (name.startsWith('auth/') ? AuthLayout : null),
     strictMode: true,
     progress: {
-        color: '#4B5563',
+        // Catppuccin Latte rosewater. A static string set once at boot, so it cannot
+        // follow the flavour; this one mid-tone reads against both `base` values.
+        color: '#dc8a78',
     },
 });
 

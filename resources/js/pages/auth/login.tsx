@@ -1,5 +1,7 @@
 import { Head, usePage } from '@inertiajs/react';
+import { CircleAlert } from 'lucide-react';
 import AppearanceToggle from '@/components/appearance-toggle';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { redirect } from '@/routes/auth';
 
@@ -18,12 +20,10 @@ export default function Login({ providerName }: Props) {
 
             <div className="flex flex-col gap-6">
                 {errors.oidc && (
-                    <p
-                        role="alert"
-                        className="rounded-md bg-red-50 p-3 text-center text-sm font-medium text-red-600 dark:bg-red-700/10 dark:text-red-100"
-                    >
-                        {errors.oidc}
-                    </p>
+                    <Alert variant="destructive">
+                        <CircleAlert />
+                        <AlertDescription>{errors.oidc}</AlertDescription>
+                    </Alert>
                 )}
 
                 {/*

@@ -8,4 +8,5 @@ Before planning or editing, find the row whose globs match the file's path and r
 | app/Http/Controllers/Auth/** | .ai/rules/auth.md |
 | bootstrap/app.php | .ai/rules/bootstrap.md |
 | config/** | .ai/rules/config.md |
+| resources/css/** | .ai/rules/css.md |
 | resources/js/pages/auth/** | .ai/rules/pages-auth.md |
