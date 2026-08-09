@@ -17,8 +17,11 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
-
+        /*
+         * The email has to match an account in Authentik for this user to be reachable:
+         * sign in links on email, so seeding one that Authentik does not know about
+         * creates a row nobody can ever log in as.
+         */
         User::factory()->create([
             'name' => 'Test User',
             'email' => 'test@example.com',

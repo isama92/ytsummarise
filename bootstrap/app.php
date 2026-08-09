@@ -23,7 +23,11 @@ return Application::configure(basePath: dirname(__DIR__))
          */
         $middleware->trustProxies(at: '*');
 
-        $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
+        /*
+         * The appearance cookie is read by an inline script in app.blade.php before any
+         * JavaScript bundle runs, so it has to stay readable outside of PHP.
+         */
+        $middleware->encryptCookies(except: ['appearance']);
 
         $middleware->web(append: [
             HandleAppearance::class,

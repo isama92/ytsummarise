@@ -7,9 +7,11 @@ namespace App\Providers;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
-use Illuminate\Validation\Rules\Password;
 use Override;
+use SocialiteProviders\Authentik\AuthentikExtendSocialite;
+use SocialiteProviders\Manager\SocialiteWasCalled;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -28,6 +30,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+        $this->configureSocialite();
     }
 
     /**
@@ -40,15 +43,17 @@ class AppServiceProvider extends ServiceProvider
         DB::prohibitDestructiveCommands(
             app()->isProduction(),
         );
+    }
 
-        Password::defaults(fn (): ?Password => app()->isProduction()
-            ? Password::min(12)
-                ->mixedCase()
-                ->letters()
-                ->numbers()
-                ->symbols()
-                ->uncompromised()
-            : null,
-        );
+    /**
+     * Register the Authentik driver with Socialite.
+     *
+     * Community providers are not auto-discovered the way Socialite's built-in drivers
+     * are, so without this listener Socialite::driver('authentik') throws
+     * "Driver [authentik] not supported."
+     */
+    protected function configureSocialite(): void
+    {
+        Event::listen(SocialiteWasCalled::class, [AuthentikExtendSocialite::class, 'handle']);
     }
 }
