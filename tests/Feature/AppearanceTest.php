@@ -36,9 +36,7 @@ test('the first paint colours in the layout match the theme stylesheet', functio
     preg_match('/\.dark\s*\{[^}]*--ctp-base:\s*(#[0-9a-f]{6})/i', $css, $frappe);
 
     expect($latte)->toHaveKey(1)
-        ->and($frappe)->toHaveKey(1);
-
-    expect($blade)
-        ->toContain("background-color: {$latte[1]};")
+        ->and($frappe)->toHaveKey(1)
+        ->and($blade)->toContain("background-color: {$latte[1]};")
         ->toContain("background-color: {$frappe[1]};");
 });
