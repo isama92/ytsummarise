@@ -11,24 +11,26 @@
     "require": {
         "php": "^8.3",
         "inertiajs/inertia-laravel": "^3.0",
-        "laravel/chisel": "^0.1.0",
-        "laravel/fortify": "^1.37.2",
         "laravel/framework": "^13.17",
-        "laravel/tinker": "^3.0",
-        "laravel/wayfinder": "^0.1.14"
+        "laravel/socialite": "^5.29",
+        "laravel/wayfinder": "^0.1.14",
+        "socialiteproviders/authentik": "^5.3"
     },
     "require-dev": {
+        "driftingly/rector-laravel": "^2.5",
         "fakerphp/faker": "^1.24",
         "larastan/larastan": "^3.9",
         "laravel/boost": "^2.2",
         "laravel/pail": "^1.2.5",
         "laravel/pao": "^1.0.6",
         "laravel/pint": "^1.27",
-        "laravel/sail": "^1.53",
+        "laravel/tinker": "^3.0",
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.9.3",
         "pestphp/pest": "^5.0",
-        "pestphp/pest-plugin-laravel": "^5.0"
+        "pestphp/pest-plugin-laravel": "^5.0",
+        "pestphp/pest-plugin-rector": "^5.0",
+        "rector/rector": "^2.6"
     },
     "autoload": {
         "psr-4": {
@@ -61,6 +63,12 @@
         "lint:check": [
             "pint --parallel --test"
         ],
+        "refactor": [
+            "rector process"
+        ],
+        "refactor:check": [
+            "rector process --dry-run"
+        ],
         "ci:check": [
             "Composer\\Config::disableProcessTimeout",
             "npm run lint:check",
@@ -68,8 +76,17 @@
             "npm run types:check",
             "@test"
         ],
+        "ci:lint": [
+            "@lint --ansi"
+        ],
+        "ci:refactor": [
+            "@refactor --ansi"
+        ],
+        "ci:types:check": [
+            "@types:check --error-format=github --ansi --no-progress"
+        ],
         "types:check": [
-            "phpstan analyse"
+            "phpstan analyse --memory-limit=1G"
         ],
         "test": [
             "@php artisan config:clear --ansi",
@@ -90,7 +107,6 @@
         ],
         "post-create-project-cmd": [
             "@php artisan key:generate --ansi",
-            "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
             "@php artisan migrate --graceful --ansi"
         ],
         "pre-package-uninstall": [

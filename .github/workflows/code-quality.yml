@@ -1,0 +1,59 @@
+name: code quality
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Separate workflow from the formatters, not just a separate job, for two reasons.
+  # PHPStan cannot fix anything, so it can only fail; sharing a run with autofix.ci
+  # would let an unrelated type error hold a formatting fix hostage. And autofix.ci
+  # requires its workflow to be named exactly "autofix.ci", which this analysis has no
+  # business being part of. See .github/workflows/autofix.yml.
+  analyse:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name != 'pull_request' || ! github.event.pull_request.draft
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Cache PHPStan results
+        uses: actions/cache@v5
+        with:
+          path: /tmp/phpstan
+          key: ${{ github.repository }}-phpstan-${{ github.sha }}
+          restore-keys: |
+            ${{ github.repository }}-phpstan-
+
+      # --error-format=github turns each finding into an annotation on the diff.
+      - name: Run PHPStan
+        run: composer ci:types:check

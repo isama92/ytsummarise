@@ -1,11 +1,46 @@
 <?php
 
+use App\Http\Controllers\Auth\AuthenticationController;
+use App\Http\Controllers\Auth\FirstUserController;
 use Illuminate\Support\Facades\Route;
 
-Route::inertia('/', 'welcome')->name('home');
+Route::middleware('auth')->group(function (): void {
+    Route::inertia('/', 'welcome')->name('home');
 
-Route::middleware(['auth', 'verified'])->group(function () {
-    Route::inertia('dashboard', 'dashboard')->name('dashboard');
+    Route::post('logout', [AuthenticationController::class, 'destroy'])->name('logout');
 });
 
-require __DIR__.'/settings.php';
+/*
+ * Everything here is reachable by anonymous clients, so everything here is throttled.
+ * Fortify used to rate limit the login POST and took its limiter with it when it went.
+ * auth/redirect is the one that would hurt most unthrottled: it writes a fresh OAuth
+ * state into the session on every hit, which with SESSION_DRIVER=database is a row per
+ * request. The limit is per route and per IP, so one noisy client cannot exhaust
+ * anybody else's budget, and 30 a minute is far above what a person does by hand.
+ */
+Route::middleware('guest')->group(function (): void {
+    Route::middleware('throttle:30,1')->group(function (): void {
+        Route::get('login', [AuthenticationController::class, 'create'])->name('login');
+
+        Route::get('auth/redirect', [AuthenticationController::class, 'redirect'])->name('auth.redirect');
+        Route::get('auth/callback', [AuthenticationController::class, 'callback'])->name('auth.callback');
+
+        /*
+         * Only reachable while AUTH_ENABLED is false and no user exists; the controller
+         * answers 404 otherwise. Registered in both modes so the route table, and the
+         * redirect AuthenticateAsFirstUser sends guests to, never depend on configuration.
+         */
+        Route::get('first-user', [FirstUserController::class, 'create'])->name('first-user.create');
+    });
+
+    /*
+     * Deliberately outside the group rather than carrying a second, tighter throttle on
+     * top of it: two throttle middleware on one route derive the same key from the route
+     * and the IP, so both increment the same counter and the real limit is half the
+     * smaller number. This route creates an account and is used once in the lifetime of
+     * an installation, so it gets its own budget instead.
+     */
+    Route::post('first-user', [FirstUserController::class, 'store'])
+        ->middleware('throttle:10,1')
+        ->name('first-user.store');
+});

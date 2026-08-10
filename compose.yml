@@ -1,0 +1,109 @@
+# Production stack, to run behind an existing Traefik. Self-contained: it pulls the
+# image from GHCR and builds nothing, so it needs no repo checkout on the host. Copy
+# this file and a .env next to each other and run it from that directory:
+#
+#   docker compose up -d
+#   docker compose pull && docker compose up -d      # upgrade
+#
+# This is a TEMPLATE. Adjust the router rule host, the entrypoint, the cert resolver
+# and both external network names to match your install. Traefik terminates TLS and
+# owns the HTTP->HTTPS redirect; this container stays on plain HTTP and is reached
+# over the shared docker network, with no host port published.
+#
+# The database is deliberately absent: it lives in its own compose stack and is
+# reached over the shared `database` network below. Create both networks before the
+# first `up`, or compose refuses to start:
+#
+#   docker network create web        # if Traefik has not already made it
+#   docker network create database
+#
+# ---------------------------------------------------------------------------------
+# For LOCAL development there is no compose stack at all - run a throwaway Postgres
+# and `composer dev` against it:
+#
+#   docker run --rm -d --name ytsummarise-db \
+#     -e POSTGRES_USER=ytsummarise \
+#     -e POSTGRES_PASSWORD=secret \
+#     -e POSTGRES_DB=ytsummarise \
+#     -p 127.0.0.1:5432:5432 \
+#     postgres:18-alpine
+#
+# --rm means the data is discarded when the container stops. Drop it and add a volume
+# if you want the local database to survive a reboot.
+# ---------------------------------------------------------------------------------
+
+services:
+  ytsummarise:
+    image: ghcr.io/isama92/ytsummarise:latest
+    env_file: .env
+    environment:
+      # Set here rather than left to .env so the prod stack is always marked prod
+      # regardless of which .env an operator copied in (compose `environment` wins
+      # over `env_file`). APP_DEBUG in particular leaks stack traces and env values
+      # to the browser if it ever comes through as true.
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DB_CONNECTION: pgsql
+      # To stdout, so `docker logs` is the whole story and nothing accumulates in the
+      # storage volume. Overrides LOG_CHANNEL=stack from .env.example.
+      LOG_CHANNEL: stderr
+
+    # No host port. Traefik reaches the container over the `web` network below.
+    expose:
+      - "8080"
+
+    networks:
+      # Declaring any network opts out of auto-joining `default`, so it is listed
+      # explicitly. `web` is Traefik's; `database` is the Postgres stack's.
+      - default
+      - web
+      - database
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ytsummarise.rule=Host(`ytsummarise.example.com`)"
+      - "traefik.http.routers.ytsummarise.entrypoints=websecure"
+      - "traefik.http.routers.ytsummarise.tls.certresolver=letsencrypt"
+      # Must match EXPOSE / SERVER_NAME in the Dockerfile.
+      - "traefik.http.services.ytsummarise.loadbalancer.server.port=8080"
+
+    volumes:
+      # Only really needed for storage/app (user uploads). Logs go to stdout and both
+      # the cache and session drivers are the database, so the framework writes very
+      # little here. The volume inherits www-data ownership from the image on first
+      # mount, so there is no chown to do by hand.
+      - storage:/app/storage
+
+    # The image runs unprivileged as www-data on a port above 1024, so it needs no
+    # Linux capabilities at all. Not read_only: the entrypoint writes the config,
+    # route, view and event caches into bootstrap/cache on every start.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+
+    # Laravel's built-in health route, registered in bootstrap/app.php. This is a
+    # readiness signal for `docker compose ps` and for Traefik; it does not self-heal,
+    # since plain compose never restarts a merely unhealthy container.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/up"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous because the entrypoint runs four cache builds and the migrations
+      # before the server starts listening.
+      start_period: 40s
+
+    restart: unless-stopped
+
+networks:
+  # Traefik's network, created outside this stack.
+  web:
+    external: true
+  # The Postgres stack's network, created outside this stack. DB_HOST in .env is the
+  # service name of the Postgres container on it.
+  database:
+    external: true
+
+volumes:
+  storage:

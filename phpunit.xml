@@ -20,7 +20,12 @@
     <php>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
-        <env name="BCRYPT_ROUNDS" value="4"/>
+        <env name="AUTH_ENABLED" value="true"/>
+        <env name="AUTHENTIK_NAME" value="Authentik"/>
+        <env name="AUTHENTIK_BASE_URL" value="https://authentik.test"/>
+        <env name="AUTHENTIK_CLIENT_ID" value="test-client-id"/>
+        <env name="AUTHENTIK_CLIENT_SECRET" value="test-client-secret"/>
+        <env name="AUTHENTIK_REDIRECT_URI" value="http://localhost/auth/callback"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
         <env name="DB_CONNECTION" value="sqlite"/>

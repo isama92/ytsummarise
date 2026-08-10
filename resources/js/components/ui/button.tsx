@@ -1,5 +1,5 @@
-import { Slot } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
+import { Slot } from "radix-ui"
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
@@ -9,10 +9,20 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
+        // Upstream fades the primary colour towards transparent on hover. Ours is
+        // Catppuccin rosewater, a pastel, so over a light page that composites to
+        // ~1.03:1 against the rest state - no perceptible hover at all. A
+        // brightness filter reads in both flavours. See resources/css/app.css.
+        //
+        // Do not name utility classes in these comments: Tailwind scans this file
+        // for candidates, so a class written here is emitted as a dead rule.
         default:
-          "bg-primary text-primary-foreground shadow-xs hover:bg-primary/90",
+          "bg-primary text-primary-foreground shadow-xs hover:brightness-95",
+        // Upstream hardcodes a white label here, which against Frappe red is
+        // 2.65:1 - an AA failure on a destructive action. The token gives 4.80:1
+        // in Latte and 4.65:1 in Frappe.
         destructive:
-          "bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
+          "bg-destructive text-destructive-foreground shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
         outline:
           "border border-input bg-background shadow-xs hover:bg-accent hover:text-accent-foreground",
         secondary:
@@ -44,7 +54,7 @@ function Button({
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
   }) {
-  const Comp = asChild ? Slot : "button"
+  const Comp = asChild ? Slot.Root : "button"
 
   return (
     <Comp
