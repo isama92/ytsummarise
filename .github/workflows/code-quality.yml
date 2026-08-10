@@ -19,75 +19,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Rector, Pint and Prettier all rewrite files, so this job fixes rather than
-  # complains and hands the result to autofix.ci to commit back onto the branch.
-  #
-  # REQUIRES the autofix.ci GitHub App to be installed on this repository
-  # (https://github.com/apps/autofix-ci). Without it the formatters still run and the
-  # job still passes, but nothing is ever pushed - the fixes are silently discarded.
-  autofix:
-    name: Format and refactor
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Draft PRs are still being written; formatting them just adds noise to a diff
-    # the author is not finished with.
-    if: github.event_name != 'pull_request' || ! github.event.pull_request.draft
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
-        with:
-          php-version: '8.5'
-          tools: composer:v2
-          coverage: none
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Install Composer dependencies
-        run: composer install --no-interaction --no-progress --prefer-dist
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      # Both tools are incremental. The key includes the SHA so every run writes a
-      # fresh entry, and restore-keys falls back to the newest previous one.
-      - name: Cache formatting results
-        uses: actions/cache@v5
-        with:
-          path: |
-            .pint.cache
-            /tmp/rector/cache
-          key: ${{ github.repository }}-code-quality-${{ github.sha }}
-          restore-keys: |
-            ${{ github.repository }}-code-quality-
-
-      # Rector before Pint: Rector rewrites syntax and cares nothing for formatting,
-      # so Pint has to run over its output rather than the other way round.
-      - name: Run Rector
-        run: composer ci:refactor
-
-      - name: Run Pint
-        run: composer ci:lint
-
-      - name: Run Prettier
-        run: npm run format
-
-      - name: Commit any fixes
-        uses: autofix-ci/action@c5b2d67aa2274e7b5a18224e8171550871fc7e4a
-        with:
-          commit-message: '[autofix.ci] Apply code formatting fixes'
-
-  # Separate job, not a step in the one above, for a specific reason: PHPStan cannot
-  # fix anything, so it can only fail. As a step it would abort the run before
-  # autofix.ci ever pushed, and a formatting fix would be held hostage by an unrelated
-  # type error.
+  # Separate workflow from the formatters, not just a separate job, for two reasons.
+  # PHPStan cannot fix anything, so it can only fail; sharing a run with autofix.ci
+  # would let an unrelated type error hold a formatting fix hostage. And autofix.ci
+  # requires its workflow to be named exactly "autofix.ci", which this analysis has no
+  # business being part of. See .github/workflows/autofix.yml.
   analyse:
     name: Static analysis
     runs-on: ubuntu-latest

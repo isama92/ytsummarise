@@ -22,6 +22,7 @@ on:
     # to publish deliberately.
     paths-ignore:
       - '**.md'
+      - .github/workflows/autofix.yml
       - .github/workflows/code-quality.yml
       - .github/workflows/tests.yml
   workflow_dispatch:
