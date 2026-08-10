@@ -9,10 +9,22 @@ beforeEach(function (): void {
     config(['auth.enabled' => false]);
 });
 
+/*
+ * The shared prop assertion is what pins the middleware order. assertAuthenticatedAs
+ * reads the guard after the response, so it passes either way; only the page's own
+ * copy of the user proves AuthenticateAsFirstUser ran before HandleInertiaRequests
+ * shared it. Drop the prependToPriorityList call in bootstrap/app.php and this is the
+ * assertion that fails.
+ */
 test('a visitor is signed in as the only user', function (): void {
     $user = User::factory()->create();
 
-    $this->get(route('home'))->assertOk();
+    $this->get(route('home'))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('welcome')
+            ->where('auth.user.name', $user->name),
+        );
 
     $this->assertAuthenticatedAs($user);
 });
@@ -86,6 +98,21 @@ test('the setup form rejects a missing name and a malformed email', function ():
         ])
         ->assertRedirect(route('first-user.create'))
         ->assertSessionHasErrors(['name', 'email']);
+
+    expect(User::count())->toBe(0);
+});
+
+/*
+ * Tighter than the rest of the guest group because this route creates an account.
+ * Driven with an invalid payload so the limiter is what stops it, not the controller's
+ * refusal to make a second user.
+ */
+test('the setup form submission is rate limited', function (): void {
+    for ($attempt = 0; $attempt < 10; $attempt++) {
+        $this->post(route('first-user.store'), [])->assertRedirect();
+    }
+
+    $this->post(route('first-user.store'), [])->assertTooManyRequests();
 
     expect(User::count())->toBe(0);
 });

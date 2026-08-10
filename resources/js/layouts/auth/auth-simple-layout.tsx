@@ -1,5 +1,6 @@
 import { Link } from '@inertiajs/react';
 import AppLogoIcon from '@/components/app-logo-icon';
+import AppearanceToggle from '@/components/appearance-toggle';
 import {
     Card,
     CardContent,
@@ -17,6 +18,13 @@ export default function AuthSimpleLayout({
 }: AuthLayoutProps) {
     return (
         <div className="flex min-h-svh flex-col items-center justify-center bg-background p-6 md:p-10">
+            {/*
+             * Here rather than in each page: the toggle is positioned against the
+             * viewport, so rendering it inside the card put a fixed control in the
+             * middle of the form's tab order.
+             */}
+            <AppearanceToggle />
+
             <div className="flex w-full max-w-sm flex-col gap-6">
                 <Link
                     href={home()}

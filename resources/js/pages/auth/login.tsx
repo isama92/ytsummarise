@@ -1,6 +1,5 @@
 import { Head, usePage } from '@inertiajs/react';
 import { CircleAlert } from 'lucide-react';
-import AppearanceToggle from '@/components/appearance-toggle';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { redirect } from '@/routes/auth';
@@ -15,8 +14,6 @@ export default function Login({ providerName }: Props) {
     return (
         <>
             <Head title="Log in" />
-
-            <AppearanceToggle />
 
             <div className="flex flex-col gap-6">
                 {errors.oidc && (

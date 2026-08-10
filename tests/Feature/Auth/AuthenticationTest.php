@@ -70,9 +70,13 @@ test('the callback matches an existing user on email and refreshes their name', 
     $this->assertAuthenticatedAs($user);
 });
 
-test('the callback falls back to the nickname when the provider sends no name', function (): void {
+/*
+ * An Authentik account with no first or last name set sends an empty string rather
+ * than omitting the claim, so both shapes of "no name" have to fall through.
+ */
+test('the callback falls back to the nickname when the provider sends no name', function (mixed $name): void {
     Socialite::fake('authentik', ProviderUser::fake([
-        'name' => null,
+        'name' => $name,
         'nickname' => 'sborzoni',
         'email' => 'borzoni@vcsw.nl',
     ]));
@@ -83,12 +87,15 @@ test('the callback falls back to the nickname when the provider sends no name', 
         'name' => 'sborzoni',
         'email' => 'borzoni@vcsw.nl',
     ]);
-});
+})->with([
+    'null name' => null,
+    'empty name' => '',
+]);
 
-test('the callback falls back to the email local part when the provider sends neither', function (): void {
+test('the callback falls back to the email local part when the provider sends neither', function (mixed $name, mixed $nickname): void {
     Socialite::fake('authentik', ProviderUser::fake([
-        'name' => null,
-        'nickname' => null,
+        'name' => $name,
+        'nickname' => $nickname,
         'email' => 'borzoni@vcsw.nl',
     ]));
 
@@ -98,6 +105,29 @@ test('the callback falls back to the email local part when the provider sends ne
         'name' => 'borzoni',
         'email' => 'borzoni@vcsw.nl',
     ]);
+})->with([
+    'both null' => [null, null],
+    'both empty' => ['', ''],
+]);
+
+/*
+ * The email is the identity and the unique index is case sensitive, so the same
+ * person arriving with different capitalisation must not become a second account.
+ */
+test('the callback lowercases the email before matching', function (): void {
+    $user = User::factory()->create(['email' => 'borzoni@vcsw.nl']);
+
+    Socialite::fake('authentik', ProviderUser::fake([
+        'name' => 'Stefano Borzoni',
+        'email' => 'Borzoni@VCSW.nl',
+    ]));
+
+    $this->get(route('auth.callback'))->assertRedirect(route('home'));
+
+    expect(User::count())->toBe(1)
+        ->and($user->refresh()->email)->toBe('borzoni@vcsw.nl');
+
+    $this->assertAuthenticatedAs($user);
 });
 
 test('the callback regenerates the session id', function (): void {
@@ -114,14 +144,19 @@ test('the callback regenerates the session id', function (): void {
     expect(session()->getId())->not->toBe($sessionIdBefore);
 });
 
+/*
+ * Primed through the session rather than by visiting a guarded page, because the
+ * only guarded page is / - which is also the fallback, so priming with it would
+ * pass just as well with redirect()->intended() replaced by a plain redirect.
+ */
 test('the callback honours the url the user was originally heading for', function (): void {
     Socialite::fake('authentik', ProviderUser::fake([
         'email' => 'borzoni@vcsw.nl',
     ]));
 
-    $this->get(route('home'))->assertRedirect(route('login'));
-
-    $this->get(route('auth.callback'))->assertRedirect(route('home'));
+    $this->withSession(['url.intended' => url('/somewhere-else')])
+        ->get(route('auth.callback'))
+        ->assertRedirect(url('/somewhere-else'));
 });
 
 test('the callback sends the user back to login when the provider rejects the attempt', function (): void {
@@ -169,4 +204,16 @@ test('users can log out', function (): void {
 
 test('guests cannot reach the logout route', function (): void {
     $this->post(route('logout'))->assertRedirect(route('login'));
+});
+
+/*
+ * Guards the throttle on the route that writes a session row per request. Everything
+ * else in the guest group shares the same limiter definition.
+ */
+test('the redirect route is rate limited', function (): void {
+    for ($attempt = 0; $attempt < 30; $attempt++) {
+        $this->get(route('auth.redirect'))->assertRedirect();
+    }
+
+    $this->get(route('auth.redirect'))->assertTooManyRequests();
 });

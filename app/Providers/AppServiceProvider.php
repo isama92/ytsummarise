@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -30,6 +31,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+        $this->configureModels();
         $this->configureSocialite();
     }
 
@@ -43,6 +45,21 @@ class AppServiceProvider extends ServiceProvider
         DB::prohibitDestructiveCommands(
             app()->isProduction(),
         );
+    }
+
+    /**
+     * Turn Eloquent's quiet failure modes into loud ones.
+     *
+     * Strictness is off in production because lazy loading and discarded fill attempts
+     * should degrade rather than 500 in front of a user. Missing attributes are the
+     * exception and stay guarded everywhere: reading one that was never selected
+     * silently yields null, which is how a partial select turns into wrong output
+     * instead of an error.
+     */
+    protected function configureModels(): void
+    {
+        Model::shouldBeStrict(! $this->app->environment('production'));
+        Model::preventAccessingMissingAttributes();
     }
 
     /**

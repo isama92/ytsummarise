@@ -1,6 +1,5 @@
 import { Form, Head } from '@inertiajs/react';
 import FirstUserController from '@/actions/App/Http/Controllers/Auth/FirstUserController';
-import AppearanceToggle from '@/components/appearance-toggle';
 import { Button } from '@/components/ui/button';
 import {
     Field,
@@ -15,8 +14,6 @@ export default function FirstUser() {
     return (
         <>
             <Head title="Create your account" />
-
-            <AppearanceToggle />
 
             <Form
                 {...FirstUserController.store.form()}

@@ -6,21 +6,29 @@ test('the dark theme is painted server side when the appearance cookie says so',
     $this->withUnencryptedCookie('appearance', 'dark')
         ->get(route('login'))
         ->assertOk()
-        ->assertSee('class="dark"', escape: false);
+        ->assertSee('class="dark"', escape: false)
+        ->assertSee("const appearance = 'dark';", escape: false);
 });
 
 test('the light theme is painted server side when the appearance cookie says so', function (): void {
     $this->withUnencryptedCookie('appearance', 'light')
         ->get(route('login'))
         ->assertOk()
-        ->assertDontSee('class="dark"', escape: false);
+        ->assertDontSee('class="dark"', escape: false)
+        ->assertSee("const appearance = 'light';", escape: false);
 });
 
+/*
+ * The empty value is the whole assertion. The inline script that reads
+ * prefers-color-scheme is emitted on every response whatever the cookie says, so
+ * asserting on the media query would pass for all three cases and prove nothing;
+ * only an empty `appearance` makes that branch of the script reachable.
+ */
 test('no appearance cookie leaves the choice to the browser', function (): void {
     $this->get(route('login'))
         ->assertOk()
         ->assertDontSee('class="dark"', escape: false)
-        ->assertSee('prefers-color-scheme: dark', escape: false);
+        ->assertSee("const appearance = '';", escape: false);
 });
 
 /*

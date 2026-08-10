@@ -55,6 +55,14 @@ class AuthenticationController extends Controller
             return $this->failed('The identity provider returned no email address.');
         }
 
+        /*
+         * Lowercased because the email is the identity here and the unique index is
+         * case sensitive on both Postgres and SQLite: without this, the same person
+         * arriving once as Name@example.com and once as name@example.com becomes two
+         * accounts. Fortify did this through its lowercase_usernames option.
+         */
+        $email = Str::lower($email);
+
         $user = User::updateOrCreate(
             ['email' => $email],
             ['name' => $this->resolveName($providerUser, $email)],
@@ -100,11 +108,19 @@ class AuthenticationController extends Controller
 
     /**
      * Work out a display name from whichever claims the provider filled in.
+     *
+     * Emptiness is what counts, not nullness: an Authentik account with no first or
+     * last name set sends "name": "", and coalescing on null alone would store that
+     * empty string and greet the user by nothing at all.
      */
     private function resolveName(ProviderUser $providerUser, string $email): string
     {
-        return $providerUser->getName()
-            ?? $providerUser->getNickname()
-            ?? Str::before($email, '@');
+        $candidates = [
+            $providerUser->getName(),
+            $providerUser->getNickname(),
+            Str::before($email, '@'),
+        ];
+
+        return (string) collect($candidates)->first(fn (?string $candidate): bool => filled($candidate));
     }
 }
