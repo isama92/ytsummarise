@@ -19,13 +19,11 @@ export default function AuthSimpleLayout({
     return (
         <div className="flex min-h-svh flex-col items-center justify-center bg-background p-6 md:p-10">
             {/*
-             * Here rather than in each page: the toggle is positioned against the
-             * viewport, so rendering it inside the card put a fixed control in the
-             * middle of the form's tab order.
+             * Here rather than in each page, and positioned against the viewport, because
+             * rendering it inside the card put a fixed control in the middle of the
+             * form's tab order.
              */}
-            <div className="fixed top-4 right-4">
-                <AppearanceToggle />
-            </div>
+            <AppearanceToggle className="fixed top-4 right-4" />
 
             <div className="flex w-full max-w-sm flex-col gap-6">
                 <Link

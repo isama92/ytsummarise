@@ -11,8 +11,8 @@ import type { SVGAttributes } from 'react';
  * public/favicon.svg is the same geometry on a rosewater tile; keep the two in step.
  *
  * The viewBox is cropped to the shapes plus a unit of air rather than being the square
- * canvas they were drawn on, so `size-8` gets a mark that fills it. Whitespace around
- * the logo belongs to the layout, not to the asset.
+ * canvas they were drawn on, so the mark fills whatever box a caller sizes it into.
+ * Whitespace around the logo belongs to the layout, not to the asset.
  */
 export default function AppLogoIcon(props: SVGAttributes<SVGElement>) {
     return (

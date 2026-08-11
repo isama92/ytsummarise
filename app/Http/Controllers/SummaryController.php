@@ -9,6 +9,7 @@ use App\Http\Requests\SummaryRequest;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\Date;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -46,19 +47,37 @@ class SummaryController extends Controller
 
         $summary = Summary::query()->firstOrCreate(
             ['video_id' => $videoId],
-            ['status' => SummaryStatus::Pending],
+            ['status' => SummaryStatus::Pending, 'requested_at' => Date::now()],
         );
 
         /*
-         * A video somebody already summarised costs nothing: the row is answered as it
-         * stands. A previous failure is the one case worth redoing, which also makes
-         * submitting the same video again the retry mechanism.
+         * A video somebody already summarised costs nothing and is answered as it stands.
          */
-        if ($summary->wasRecentlyCreated || $summary->status === SummaryStatus::Failed) {
-            $summary->update(['status' => SummaryStatus::Pending, 'body' => null]);
-
-            SummariseVideo::dispatch($summary);
+        if ($summary->status === SummaryStatus::Ready) {
+            return redirect()->route('summaries.show', $summary);
         }
+
+        /*
+         * A failed row starts over, and its clock with it. A pending one is left exactly
+         * as it is: whoever asked first is already waiting, and resetting requested_at
+         * would restart their clock and push back the moment this gets written off.
+         */
+        if ($summary->status === SummaryStatus::Failed) {
+            $summary->update([
+                'status' => SummaryStatus::Pending,
+                'body' => null,
+                'requested_at' => Date::now(),
+            ]);
+        }
+
+        /*
+         * Dispatched for anything not ready, including a row already pending. That is not
+         * a duplicate: the job is unique per video, so while one is in flight this is
+         * dropped and the browser simply joins the job already running. Once the lock has
+         * lapsed - which it cannot outlive the timeout - the same call is what starts the
+         * replacement attempt.
+         */
+        SummariseVideo::dispatch($summary);
 
         return redirect()->route('summaries.show', $summary);
     }
@@ -76,6 +95,13 @@ class SummaryController extends Controller
             'summary' => $summary instanceof Summary ? [
                 'status' => $summary->status,
                 'body' => $summary->body,
+
+                /*
+                 * What the page counts up from while it waits. Somebody who joins a job
+                 * already running sees the time it has really taken so far rather than
+                 * starting from zero.
+                 */
+                'requestedAt' => $summary->requested_at->toIso8601String(),
             ] : null,
         ]);
     }

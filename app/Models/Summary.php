@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Enums\SummaryStatus;
+use Carbon\CarbonImmutable;
 use Database\Factories\SummaryFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\RouteKey;
+use Illuminate\Database\Eloquent\Attributes\Scope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Date;
 use Override;
 
 /**
@@ -23,8 +27,9 @@ use Override;
  * @property string $video_id
  * @property SummaryStatus $status
  * @property string|null $body
+ * @property CarbonImmutable $requested_at
  */
-#[Fillable(['video_id', 'status', 'body'])]
+#[Fillable(['video_id', 'status', 'body', 'requested_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -68,6 +73,22 @@ class Summary extends Model
     {
         return [
             'status' => SummaryStatus::class,
+            'requested_at' => 'immutable_datetime',
         ];
+    }
+
+    /**
+     * Summaries that have been pending longer than a video is given.
+     *
+     * The job may have been killed, never reserved, or lost with the queue it sat in;
+     * from here they look the same and all end up written off the same way.
+     *
+     * @param  Builder<Summary>  $query
+     */
+    #[Scope]
+    protected function stalled(Builder $query): void
+    {
+        $query->where('status', SummaryStatus::Pending)
+            ->where('requested_at', '<=', Date::now()->subSeconds(config()->integer('summaries.timeout')));
     }
 }

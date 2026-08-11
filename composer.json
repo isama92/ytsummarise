@@ -74,6 +74,7 @@
             "npm run lint:check",
             "npm run format:check",
             "npm run types:check",
+            "npm run test",
             "@test"
         ],
         "ci:lint": [
@@ -100,6 +101,7 @@
         "suite": [
             "Composer\\Config::disableProcessTimeout",
             "@static",
+            "npm run test",
             "@php artisan config:clear --ansi",
             "@php artisan test"
         ],

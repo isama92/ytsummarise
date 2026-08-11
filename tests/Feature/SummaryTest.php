@@ -6,6 +6,7 @@ use App\Enums\SummaryStatus;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use App\Models\User;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Queue;
 use Inertia\Testing\AssertableInertia;
 
@@ -60,7 +61,10 @@ test('a video somebody already summarised is not summarised again', function ():
 test('submitting a video whose summary failed is how you retry it', function (): void {
     Queue::fake();
 
-    $summary = Summary::factory()->failed()->create(['video_id' => 'dQw4w9WgXcQ']);
+    $summary = Summary::factory()->failed()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'requested_at' => Date::now()->subHour(),
+    ]);
 
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
@@ -68,8 +72,45 @@ test('submitting a video whose summary failed is how you retry it', function ():
 
     Queue::assertPushed(SummariseVideo::class);
 
+    $summary->refresh();
+
     expect(Summary::query()->count())->toBe(1)
-        ->and($summary->fresh()?->status)->toBe(SummaryStatus::Pending);
+        ->and($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->body)->toBeNull()
+        /* A retry is a new attempt, so its clock starts now rather than an hour ago. */
+        ->and($summary->requested_at->diffInSeconds(Date::now(), true))->toBeLessThan(5);
+});
+
+/*
+ * Not a duplicate dispatch. The job is unique per video, so while one is in flight this
+ * one is dropped and the browser simply joins the job already running. Once the lock has
+ * lapsed, the same call is what starts the replacement attempt.
+ */
+test('resubmitting a video already being summarised joins it without restarting its clock', function (): void {
+    Queue::fake();
+
+    $askedAt = Date::now()->subMinutes(4);
+    $summary = Summary::factory()->pending()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'requested_at' => $askedAt,
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    expect(Summary::query()->count())->toBe(1)
+        ->and($summary->fresh()?->requested_at->timestamp)->toBe($askedAt->timestamp);
+});
+
+test('a brand new submission starts its clock straight away', function (): void {
+    Queue::fake();
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
+
+    expect(Summary::query()->sole()->requested_at->diffInSeconds(Date::now(), true))
+        ->toBeLessThan(5);
 });
 
 test('a video id that is not one is refused', function (string $videoId): void {
@@ -129,6 +170,45 @@ test('a summary still being produced says so, which is what the page polls on', 
             ->component('home')
             ->where('summary.status', SummaryStatus::Pending->value)
             ->where('summary.body', null),
+        );
+});
+
+/*
+ * What the page counts up from. Somebody joining a job already running has to see the
+ * time it has really taken rather than starting from zero, so this is the row's own
+ * requested_at rather than anything derived from the request.
+ */
+test('the page is told when the summary was asked for', function (): void {
+    $summary = Summary::factory()->pending()->create([
+        'requested_at' => Date::now()->subMinutes(3),
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('summaries.show', $summary))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('home')
+            ->where('summary.requestedAt', $summary->requested_at->toIso8601String()),
+        );
+});
+
+test('tripping the throttle is explained rather than dumped', function (): void {
+    Queue::fake();
+
+    $user = User::factory()->create();
+
+    for ($attempt = 0; $attempt < 30; $attempt++) {
+        $this->actingAs($user)
+            ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+            ->assertRedirect();
+    }
+
+    $this->actingAs($user)
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertTooManyRequests()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('error')
+            ->where('status', 429),
         );
 });
 

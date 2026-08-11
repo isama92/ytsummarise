@@ -7,6 +7,7 @@ namespace Database\Factories;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Str;
 
 /**
@@ -28,7 +29,18 @@ class SummaryFactory extends Factory
             'video_id' => Str::random(11),
             'status' => SummaryStatus::Ready,
             'body' => fake()->paragraphs(3, true),
+            'requested_at' => Date::now(),
         ];
+    }
+
+    /**
+     * A summary whose job stopped existing without failing.
+     */
+    public function stalled(): static
+    {
+        return $this->pending()->state(fn (): array => [
+            'requested_at' => Date::now()->subSeconds(config()->integer('summaries.timeout') + 1),
+        ]);
     }
 
     /**

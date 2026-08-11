@@ -42,7 +42,23 @@ return new class extends Migration
              */
             $table->text('body')->nullable();
 
+            /*
+             * When the attempt currently in flight was asked for, which is what the page
+             * counts up from while it waits and what decides when a summary has been
+             * pending long enough to write off.
+             *
+             * Not created_at: a row outlives its attempts. Retrying a summary that failed
+             * starts a new clock, while somebody joining a job already running has to see
+             * the time the person before them has already waited, not zero.
+             */
+            $table->timestamp('requested_at');
+
             $table->timestamps();
+
+            /*
+             * The one query the expiry command runs.
+             */
+            $table->index(['status', 'requested_at']);
         });
     }
 

@@ -39,9 +39,47 @@ test('a job that gives up records the failure, so the page stops waiting', funct
 
     (new SummariseVideo($summary))->failed(new RuntimeException('no transcript'));
 
-    expect($summary->fresh()?->status)->toBe(SummaryStatus::Failed);
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        ->and($summary->body)->toBeNull();
 
     Log::shouldHaveReceived('error')->once();
+});
+
+/*
+ * handle() can succeed and the worker still die before it deletes the job, leaving a
+ * later attempt free to throw. Marking the row failed then would hide a finished summary
+ * behind a "did not work" message.
+ */
+test('a late failure does not throw away a summary that already finished', function (): void {
+    Log::spy();
+
+    $summary = Summary::factory()->create(['body' => 'The finished summary.']);
+
+    (new SummariseVideo($summary))->failed(new RuntimeException('worker died after writing'));
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Ready)
+        ->and($summary->body)->toBe('The finished summary.');
+
+    Log::shouldHaveReceived('error')->once();
+});
+
+test('the job cannot outlive the timeout, and neither can its lock', function (): void {
+    config(['summaries.timeout' => 1800]);
+
+    $job = new SummariseVideo(Summary::factory()->pending()->create());
+
+    expect($job->timeout)->toBe(1800)
+        ->and($job->uniqueFor)->toBe(1800)
+        /*
+         * A retry_after below the job's timeout has the worker reserve the job again while
+         * the first copy is still running, and summarising a video twice is a paid mistake.
+         */
+        ->and(config()->integer('queue.connections.database.retry_after'))
+        ->toBeGreaterThan($job->timeout);
 });
 
 test('one job is in flight per video, not per request', function (): void {

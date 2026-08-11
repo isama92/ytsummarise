@@ -30,10 +30,20 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     public array $backoff = [5, 15];
 
     /**
-     * A worker killed mid job would otherwise hold the lock forever, and this video
-     * could never be summarised again. Generous enough for a slow model call.
+     * How long this job may run before the worker kills it.
      */
-    public int $uniqueFor = 600;
+    public int $timeout;
+
+    /**
+     * How long the uniqueness lock survives.
+     *
+     * The same value as the timeout, and that matters twice. While it is held, a second
+     * person asking for the same video joins this job rather than starting another, which
+     * is the whole point. And because it cannot outlive the timeout, a worker killed mid
+     * job cannot hold this video hostage: the lock lapses at the same moment the expiry
+     * command gives up on the row, so the next person to ask starts a fresh attempt.
+     */
+    public int $uniqueFor;
 
     /**
      * Stands in for the summary until the model call exists. Deliberately obvious as
@@ -47,7 +57,11 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
         Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.
         TEXT;
 
-    public function __construct(public Summary $summary) {}
+    public function __construct(public Summary $summary)
+    {
+        $this->timeout = config()->integer('summaries.timeout');
+        $this->uniqueFor = $this->timeout;
+    }
 
     /**
      * One job in flight per video.
@@ -84,13 +98,27 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      *
      * Recording the failure on the row is what lets the page stop asking for an answer
      * that is not coming.
+     *
+     * Guarded, because this can fire on a row that already holds a finished summary.
+     * handle() can succeed and the worker still die before it deletes the job, and the
+     * attempt after that one is free to throw. Marking the row failed then would hide a
+     * perfectly good summary behind a "did not work" message. The failure is still
+     * logged; only the row is left alone.
      */
     public function failed(?Throwable $exception): void
     {
-        $this->summary->update(['status' => SummaryStatus::Failed]);
+        $ready = $this->summary->status === SummaryStatus::Ready;
+
+        if (! $ready) {
+            $this->summary->update([
+                'status' => SummaryStatus::Failed,
+                'body' => null,
+            ]);
+        }
 
         Log::error('Summarising a video failed', [
             'video_id' => $this->summary->video_id,
+            'already_summarised' => $ready,
             'exception' => $exception?->getMessage(),
         ]);
     }

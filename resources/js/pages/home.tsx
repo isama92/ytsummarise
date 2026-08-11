@@ -1,7 +1,7 @@
 import type { FormComponentRef } from '@inertiajs/core';
 import { Form, Head, usePoll } from '@inertiajs/react';
 import { ArrowUp, ClipboardPaste } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ClipboardEvent } from 'react';
 import { flushSync } from 'react-dom';
 import SummaryController from '@/actions/App/Http/Controllers/SummaryController';
@@ -19,12 +19,27 @@ type HomeProps = {
 };
 
 /**
- * The entire payload. Stated as a type because transform() replaces whatever the form
- * collected, so this shape is not inferable from the fields.
+ * The entire payload: one hidden field, named below, carrying the extracted id.
+ *
+ * Stated as a type so `errors` is keyed by something real. Inferring it would mean
+ * inferring from the fields, and the field a person actually types into is deliberately
+ * nameless so that what they typed never leaves the browser.
  */
 type SummaryForm = {
     video_id: string;
 };
+
+/**
+ * Minutes and seconds since a summary was asked for.
+ */
+function elapsedSince(requestedAt: string, now: number): string {
+    const seconds = Math.max(
+        0,
+        Math.floor((now - Date.parse(requestedAt)) / 1000),
+    );
+
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
 
 /**
  * Asks the server for the summary again every couple of seconds.
@@ -42,11 +57,28 @@ function SummaryPoll() {
 
 export default function Home({ videoId, summary }: HomeProps) {
     const [query, setQuery] = useState(videoId ?? '');
+    const [now, setNow] = useState(() => Date.now());
     const formRef = useRef<FormComponentRef<SummaryForm>>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
     const extractedVideoId = extractVideoId(query);
     const isUnrecognised = query.trim() !== '' && extractedVideoId === null;
+    const isPending = summary?.status === 'pending';
+
+    /*
+     * Drives the clock, and only while there is something to time. setNow is called from
+     * the interval rather than from the effect body, so this is a subscription to the
+     * clock rather than the cascading render that setting state during an effect causes.
+     */
+    useEffect(() => {
+        if (!isPending) {
+            return;
+        }
+
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+
+        return () => clearInterval(timer);
+    }, [isPending]);
 
     /*
      * Reading the clipboard needs a secure context and a permission the browser can
@@ -58,16 +90,30 @@ export default function Home({ videoId, summary }: HomeProps) {
         typeof navigator.clipboard?.readText === 'function';
 
     /**
-     * Fill the field and, when there is an id in what arrived, summarise it right away.
+     * Insert pasted text where a paste would put it, and summarise if that yields an id.
+     *
+     * Inserting rather than replacing: pasting a link into a field that already has
+     * something in it used to throw that something away, with no undo entry to get it
+     * back, and then submit before there was any chance to notice.
      *
      * The flush is what makes the second half work: submitting reads the form's own
      * fields, so without it the request would carry whatever the field held before the
      * paste. This is the case flushSync exists for, handing state to an imperative API.
      */
     const summarisePastedText = (text: string): void => {
-        flushSync(() => setQuery(text));
+        const field = inputRef.current;
+        const start = field?.selectionStart ?? query.length;
+        const end = field?.selectionEnd ?? query.length;
+        const pasted = query.slice(0, start) + text + query.slice(end);
 
-        if (extractVideoId(text) !== null) {
+        flushSync(() => setQuery(pasted));
+
+        /*
+         * Read from the result, not from what arrived. Pasting an id up against existing
+         * text makes something that is no longer an id, and guessing which part of it was
+         * meant would be worse than waiting to be told.
+         */
+        if (extractVideoId(pasted) !== null) {
             formRef.current?.submit();
         }
     };
@@ -249,6 +295,26 @@ export default function Home({ videoId, summary }: HomeProps) {
                                 >
                                     {isWorking && (
                                         <div className="space-y-3">
+                                            {/*
+                                             * Hidden from assistive technology on
+                                             * purpose: this sits inside a polite live
+                                             * region, and a number that changes every
+                                             * second would be read out every second.
+                                             * The busy state already says it is working.
+                                             */}
+                                            {summary !== null && (
+                                                <p
+                                                    aria-hidden="true"
+                                                    className="pb-1 text-sm text-muted-foreground tabular-nums"
+                                                    data-test="elapsed"
+                                                >
+                                                    {elapsedSince(
+                                                        summary.requestedAt,
+                                                        now,
+                                                    )}
+                                                </p>
+                                            )}
+
                                             <div className="h-4 w-full animate-pulse rounded bg-muted" />
                                             <div className="h-4 w-11/12 animate-pulse rounded bg-muted" />
                                             <div className="h-4 w-8/12 animate-pulse rounded bg-muted" />

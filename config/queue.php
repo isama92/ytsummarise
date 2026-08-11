@@ -40,7 +40,15 @@ return [
             'connection' => env('DB_QUEUE_CONNECTION'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
-            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
+
+            /*
+             * Above Laravel's default 90, because SummariseVideo's timeout comes from
+             * summaries.timeout and defaults to half an hour. retry_after has to stay
+             * larger than any job's timeout or the worker reserves the job again while
+             * the first copy is still running, and summarising a video twice is a
+             * paid mistake. Raise both together or neither.
+             */
+            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 1860),
             'after_commit' => false,
         ],
 
