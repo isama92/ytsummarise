@@ -9,40 +9,32 @@ use App\Http\Requests\SummaryRequest;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use Illuminate\Http\RedirectResponse;
-use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class SummaryController extends Controller
 {
     /**
-     * The application's only screen.
-     *
-     * Split across a POST that creates the summary and a GET that shows it, so the
-     * result lives at a url of its own: refreshing keeps it, the link can be shared, and
-     * the browser never offers to resubmit anything. The GET is also what the page polls
-     * while the job runs.
+     * The summariser with nothing summarised.
      */
-    public function index(Request $request): Response
+    public function index(): Response
     {
-        $videoId = $this->requestedVideoId($request);
+        return $this->page(null);
+    }
 
-        $summary = $videoId === null
-            ? null
-            : Summary::query()->firstWhere('video_id', $videoId);
-
-        return Inertia::render('home', [
-            /*
-             * Present whenever the query string held a well formed id, even when nothing
-             * has been summarised for it. That prefills the field, so a link to a video
-             * whose summary has since been removed is one keystroke from working again.
-             */
-            'videoId' => $videoId,
-            'summary' => $summary instanceof Summary ? [
-                'status' => $summary->status,
-                'body' => $summary->body,
-            ] : null,
-        ]);
+    /**
+     * One summary, at a url that cannot be guessed or enumerated.
+     *
+     * Resolved by uuid through the RouteKey attribute on the model. A uuid that is not
+     * one never reaches the database: HasUniqueStringIds checks the format while
+     * resolving the binding and throws ModelNotFoundException itself, so no route
+     * constraint is needed to keep junk out of the query.
+     *
+     * This is also what the page polls while a summary is being produced.
+     */
+    public function show(Summary $summary): Response
+    {
+        return $this->page($summary);
     }
 
     /**
@@ -68,24 +60,23 @@ class SummaryController extends Controller
             SummariseVideo::dispatch($summary);
         }
 
-        return redirect()->route('home', ['v' => $videoId]);
+        return redirect()->route('summaries.show', $summary);
     }
 
     /**
-     * The video id in the query string, or null when there isn't a usable one.
+     * The one screen this application has, with or without something on it.
      *
-     * A malformed id is treated as no id rather than as an error. It can only come from a
-     * hand edited or truncated url, and an empty page is a better answer to that than a
-     * validation message about a field the visitor never filled in.
+     * The video id goes back to the browser so the field can show what was extracted
+     * from whatever was pasted.
      */
-    private function requestedVideoId(Request $request): ?string
+    private function page(?Summary $summary): Response
     {
-        $videoId = $request->query('v');
-
-        if (! is_string($videoId) || preg_match(Summary::VIDEO_ID_PATTERN, $videoId) !== 1) {
-            return null;
-        }
-
-        return $videoId;
+        return Inertia::render('home', [
+            'videoId' => $summary?->video_id,
+            'summary' => $summary instanceof Summary ? [
+                'status' => $summary->status,
+                'body' => $summary->body,
+            ] : null,
+        ]);
     }
 }

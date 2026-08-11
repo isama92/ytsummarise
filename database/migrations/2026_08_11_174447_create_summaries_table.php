@@ -15,6 +15,17 @@ return new class extends Migration
             $table->id();
 
             /*
+             * What a summary is addressed by. The video id is public knowledge, sitting
+             * in the YouTube url everyone can see, so keying the page on it would let
+             * anyone walk the parameter and read every summary anybody has ever asked
+             * for. A uuid carries nothing about the video and cannot be enumerated.
+             *
+             * The primary key stays an integer: this column is the public handle, not
+             * the identity the rest of the schema would join on.
+             */
+            $table->uuid('uuid')->unique();
+
+            /*
              * A YouTube id is always eleven characters of [A-Za-z0-9_-], so the column is
              * sized to it rather than left as a loose string. Unique, because a summary
              * belongs to a video and not to whoever asked for it: the second person to

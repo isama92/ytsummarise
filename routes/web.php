@@ -8,12 +8,14 @@ use App\Http\Controllers\SummaryController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth')->group(function (): void {
-    /*
-     * The video id travels as `v` in the query string, matching YouTube's own url, and as
-     * `video_id` in the POST body, where it is a validated field and wants a name that
-     * says so.
-     */
     Route::get('/', [SummaryController::class, 'index'])->name('home');
+
+    /*
+     * Deliberately not throttled, unlike the POST below. The page polls this route every
+     * two seconds while a summary is being produced, which is thirty requests a minute:
+     * the same throttle:30,1 would start answering 429 partway through generating one.
+     */
+    Route::get('summaries/{summary}', [SummaryController::class, 'show'])->name('summaries.show');
 
     /*
      * Throttled even though it sits behind authentication: it queues work that will be a

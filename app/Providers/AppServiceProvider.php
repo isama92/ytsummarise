@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
+use Inertia\ExceptionResponse;
+use Inertia\Inertia;
 use Override;
 use SocialiteProviders\Authentik\AuthentikExtendSocialite;
 use SocialiteProviders\Manager\SocialiteWasCalled;
@@ -31,8 +33,39 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+        $this->configureInertia();
         $this->configureModels();
         $this->configureSocialite();
+    }
+
+    /**
+     * Answer errors with a page that looks like the rest of the application.
+     *
+     * withSharedData() is load bearing rather than decorative. A 404 for a url that
+     * matches no route never reaches the routes, so HandleInertiaRequests never runs and
+     * the page would otherwise render with no shared props and no root view.
+     *
+     * 500 and 503 are left to Laravel while developing, because its debug page is the
+     * whole point of a 500 locally. 404 and 403 are handled everywhere, which also keeps
+     * them assertable, since the test environment is not local.
+     *
+     * Returning null falls through to Laravel's own rendering.
+     */
+    protected function configureInertia(): void
+    {
+        Inertia::handleExceptionsUsing(function (ExceptionResponse $response): ?ExceptionResponse {
+            $handled = $this->app->environment('local')
+                ? [403, 404]
+                : [403, 404, 500, 503];
+
+            if (! in_array($response->statusCode(), $handled, true)) {
+                return null;
+            }
+
+            return $response
+                ->render('error', ['status' => $response->statusCode()])
+                ->withSharedData();
+        });
     }
 
     /**
