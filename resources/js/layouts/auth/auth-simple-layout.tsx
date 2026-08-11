@@ -23,7 +23,9 @@ export default function AuthSimpleLayout({
              * viewport, so rendering it inside the card put a fixed control in the
              * middle of the form's tab order.
              */}
-            <AppearanceToggle />
+            <div className="fixed top-4 right-4">
+                <AppearanceToggle />
+            </div>
 
             <div className="flex w-full max-w-sm flex-col gap-6">
                 <Link

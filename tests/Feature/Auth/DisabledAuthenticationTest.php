@@ -22,7 +22,7 @@ test('a visitor is signed in as the only user', function (): void {
     $this->get(route('home'))
         ->assertOk()
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
-            ->component('welcome')
+            ->component('home')
             ->where('auth.user.name', $user->name),
         );
 
@@ -139,7 +139,7 @@ test('the home page reports that authentication is off', function (): void {
 
     $this->get(route('home'))
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
-            ->component('welcome')
+            ->component('home')
             ->where('auth.enabled', false),
         );
 });

@@ -1,11 +1,28 @@
 <?php
 
+declare(strict_types=1);
+
 use App\Http\Controllers\Auth\AuthenticationController;
 use App\Http\Controllers\Auth\FirstUserController;
+use App\Http\Controllers\SummaryController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth')->group(function (): void {
-    Route::inertia('/', 'welcome')->name('home');
+    /*
+     * The video id travels as `v` in the query string, matching YouTube's own url, and as
+     * `video_id` in the POST body, where it is a validated field and wants a name that
+     * says so.
+     */
+    Route::get('/', [SummaryController::class, 'index'])->name('home');
+
+    /*
+     * Throttled even though it sits behind authentication: it queues work that will be a
+     * paid model call, so an accidental loop in the frontend should cost a 429 rather
+     * than a bill. Signed in people do not submit videos thirty times a minute.
+     */
+    Route::post('summaries', [SummaryController::class, 'store'])
+        ->middleware('throttle:30,1')
+        ->name('summaries.store');
 
     Route::post('logout', [AuthenticationController::class, 'destroy'])->name('logout');
 });
