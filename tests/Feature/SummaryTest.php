@@ -103,6 +103,70 @@ test('resubmitting a video already being summarised joins it without restarting 
         ->and($summary->fresh()?->requested_at->timestamp)->toBe($askedAt->timestamp);
 });
 
+/*
+ * Before the job rather than inside it, because the point of having a title is to show it
+ * while the summary is still being produced.
+ */
+test('the video is titled before the job is queued', function (): void {
+    Queue::fake();
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
+
+    expect(Summary::query()->sole()->title)->not->toBeNull();
+
+    Queue::assertPushed(SummariseVideo::class,
+        /* The job is handed a row that already knows what the video is called. */
+        fn (SummariseVideo $job): bool => $job->summary->title !== null);
+});
+
+test('a title already known is not looked up again', function (): void {
+    Queue::fake();
+
+    $summary = Summary::factory()->failed()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'title' => 'The title we already had',
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
+
+    expect($summary->fresh()?->title)->toBe('The title we already had');
+});
+
+test('the page is told the title, and keeps it while the summary is still coming', function (): void {
+    $summary = Summary::factory()->pending()->create([
+        'title' => 'How to summarise a video',
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('summaries.show', $summary))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('home')
+            ->where('summary.status', SummaryStatus::Pending->value)
+            ->where('summary.title', 'How to summarise a video')
+            ->where('summary.body', null),
+        );
+});
+
+/*
+ * A video is worth summarising whether or not anything could tell us its name, so a
+ * failed lookup must not become a failed summary.
+ */
+test('a video with no title still has a summary', function (): void {
+    $summary = Summary::factory()->create(['title' => null]);
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('summaries.show', $summary))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('home')
+            ->where('summary.title', null)
+            ->where('summary.status', SummaryStatus::Ready->value),
+        );
+});
+
 test('a brand new submission starts its clock straight away', function (): void {
     Queue::fake();
 

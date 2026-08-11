@@ -37,6 +37,16 @@ return new class extends Migration
             $table->string('status');
 
             /*
+             * The video's own title, looked up before the job is queued so the page has
+             * something to show while it waits rather than an anonymous skeleton.
+             *
+             * Nullable because it comes from somewhere else. A lookup against YouTube can
+             * fail or be rate limited, and a video without a title is worth summarising
+             * anyway; the page simply leaves the heading out.
+             */
+            $table->string('title')->nullable();
+
+            /*
              * Null until the job has something to write. Nothing distinguishes "not
              * summarised yet" from "summarised as nothing", because status already does.
              */

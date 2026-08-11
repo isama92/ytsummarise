@@ -71,6 +71,16 @@ class SummaryController extends Controller
         }
 
         /*
+         * Before the job, not inside it, so the page has a heading to show for the whole
+         * wait instead of an anonymous skeleton. Only when it is missing: the title of a
+         * video does not change between attempts, and once this is a real lookup a
+         * resubmit should not pay for it again.
+         */
+        if ($summary->title === null) {
+            $summary->update(['title' => $this->titleFor($videoId)]);
+        }
+
+        /*
          * Dispatched for anything not ready, including a row already pending. That is not
          * a duplicate: the job is unique per video, so while one is in flight this is
          * dropped and the browser simply joins the job already running. Once the lock has
@@ -80,6 +90,20 @@ class SummaryController extends Controller
         SummariseVideo::dispatch($summary);
 
         return redirect()->route('summaries.show', $summary);
+    }
+
+    /**
+     * The video's title.
+     *
+     * Stands in for a lookup against YouTube, which is why it is resolved here in the
+     * request rather than in the job: the point of having a title is to show it while the
+     * summary is still being produced. When the real lookup replaces this, it belongs in a
+     * class of its own with a timeout and a failure path that returns null - a slow or
+     * broken YouTube must not stop a video being queued.
+     */
+    private function titleFor(string $videoId): string
+    {
+        return "Placeholder title for {$videoId}";
     }
 
     /**
@@ -94,6 +118,7 @@ class SummaryController extends Controller
             'videoId' => $summary?->video_id,
             'summary' => $summary instanceof Summary ? [
                 'status' => $summary->status,
+                'title' => $summary->title,
                 'body' => $summary->body,
 
                 /*

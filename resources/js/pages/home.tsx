@@ -56,7 +56,12 @@ function SummaryPoll() {
 }
 
 export default function Home({ videoId, summary }: HomeProps) {
-    const [query, setQuery] = useState(videoId ?? '');
+    /*
+     * Always empty, including on a page that is showing a summary. The field is there to
+     * ask for the next video, not to describe the one on screen, and prefilling it left
+     * something to clear before it could be used.
+     */
+    const [query, setQuery] = useState('');
     const [now, setNow] = useState(() => Date.now());
     const formRef = useRef<FormComponentRef<SummaryForm>>(null);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -161,6 +166,12 @@ export default function Home({ videoId, summary }: HomeProps) {
                  * field animate to the top rather than jump there.
                  */
                 options={{ preserveState: true, preserveScroll: true }}
+                /*
+                 * And because it stays mounted, emptying the field is this rather than the
+                 * initial state: what was asked for is on the screen now, so leaving it
+                 * behind in the field is one thing to clear before asking for the next.
+                 */
+                onSuccess={() => setQuery('')}
                 className="flex min-h-svh flex-col items-center px-6 pb-24"
             >
                 {({ processing, errors }) => {
@@ -293,28 +304,42 @@ export default function Home({ videoId, summary }: HomeProps) {
                                     aria-busy={isWorking}
                                     className="mt-12 w-full"
                                 >
-                                    {isWorking && (
-                                        <div className="space-y-3">
-                                            {/*
-                                             * Hidden from assistive technology on
-                                             * purpose: this sits inside a polite live
-                                             * region, and a number that changes every
-                                             * second would be read out every second.
-                                             * The busy state already says it is working.
-                                             */}
-                                            {summary !== null && (
-                                                <p
-                                                    aria-hidden="true"
-                                                    className="pb-1 text-sm text-muted-foreground tabular-nums"
-                                                    data-test="elapsed"
-                                                >
-                                                    {elapsedSince(
-                                                        summary.requestedAt,
-                                                        now,
-                                                    )}
-                                                </p>
+                                    {/*
+                                     * Hidden from assistive technology on purpose: this
+                                     * sits inside a polite live region, and a number that
+                                     * changes every second would be read out every
+                                     * second. The busy state already says it is working.
+                                     */}
+                                    {isWorking && summary !== null && (
+                                        <p
+                                            aria-hidden="true"
+                                            className="text-sm text-muted-foreground tabular-nums"
+                                            data-test="elapsed"
+                                        >
+                                            {elapsedSince(
+                                                summary.requestedAt,
+                                                now,
                                             )}
+                                        </p>
+                                    )}
 
+                                    {/*
+                                     * Known before the summary is, so it holds this spot
+                                     * for the whole wait rather than appearing with the
+                                     * text. The page's only heading, and absent entirely
+                                     * when the lookup could not tell us the title.
+                                     */}
+                                    {summary?.title != null && (
+                                        <h1
+                                            className="mt-1 text-xl font-medium text-balance"
+                                            data-test="summary-title"
+                                        >
+                                            {summary.title}
+                                        </h1>
+                                    )}
+
+                                    {isWorking && (
+                                        <div className="mt-6 space-y-3">
                                             <div className="h-4 w-full animate-pulse rounded bg-muted" />
                                             <div className="h-4 w-11/12 animate-pulse rounded bg-muted" />
                                             <div className="h-4 w-8/12 animate-pulse rounded bg-muted" />
@@ -325,7 +350,7 @@ export default function Home({ videoId, summary }: HomeProps) {
                                         summary?.status === 'ready' && (
                                             <div
                                                 key={videoId}
-                                                className="animate-in space-y-4 text-pretty duration-700 fade-in slide-in-from-bottom-4"
+                                                className="mt-6 animate-in space-y-4 text-pretty duration-700 fade-in slide-in-from-bottom-4"
                                                 data-test="summary"
                                             >
                                                 {summary.body
@@ -348,7 +373,7 @@ export default function Home({ videoId, summary }: HomeProps) {
                                     {!isWorking &&
                                         summary?.status === 'failed' && (
                                             <p
-                                                className="text-sm text-muted-foreground"
+                                                className="mt-6 text-sm text-muted-foreground"
                                                 data-test="summary-failed"
                                             >
                                                 Summarising this video did not

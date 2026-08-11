@@ -26,10 +26,11 @@ use Override;
  * @property string $uuid
  * @property string $video_id
  * @property SummaryStatus $status
+ * @property string|null $title
  * @property string|null $body
  * @property CarbonImmutable $requested_at
  */
-#[Fillable(['video_id', 'status', 'body', 'requested_at'])]
+#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {

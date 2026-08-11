@@ -28,6 +28,8 @@ class SummaryFactory extends Factory
         return [
             'video_id' => Str::random(11),
             'status' => SummaryStatus::Ready,
+            /* Titles do not end in a full stop, and sentence() is the typed generator. */
+            'title' => rtrim(fake()->sentence(5), '.'),
             'body' => fake()->paragraphs(3, true),
             'requested_at' => Date::now(),
         ];
