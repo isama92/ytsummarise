@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Offline</title>
+
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+        <meta name="theme-color" content="#eff1f5" media="(prefers-color-scheme: light)">
+        <meta name="theme-color" content="#303446" media="(prefers-color-scheme: dark)">
+
+        <!--
+            Served by the service worker when a navigation cannot reach the server.
+
+            Self-contained on purpose. The application's stylesheet has a content-hashed
+            filename, so using it would mean the worker reading Vite's manifest to find
+            out what that hash is this week. Everything here is inline instead, which is
+            also why this is a static file rather than an Inertia page.
+
+            The colours are Catppuccin Latte and Frappe `base`, `text` and `surface0`, the
+            same four resources/css/app.css uses. They follow the system here rather than
+            the appearance cookie, because reading a cookie would need JavaScript and this
+            page has none.
+        -->
+        <style>
+            :root {
+                --background: #eff1f5;
+                --foreground: #4c4f69;
+                --muted: #6c6f85;
+                --border: #ccd0da;
+                color-scheme: light;
+            }
+
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --background: #303446;
+                    --foreground: #c6d0f5;
+                    --muted: #a5adce;
+                    --border: #414559;
+                    color-scheme: dark;
+                }
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            html,
+            body {
+                background-color: var(--background);
+            }
+
+            body {
+                margin: 0;
+                min-height: 100svh;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 0.75rem;
+                padding: 1.5rem 1.5rem 6rem;
+                color: var(--foreground);
+                font-family:
+                    'Instrument Sans', ui-sans-serif, system-ui, -apple-system,
+                    'Segoe UI', sans-serif;
+                text-align: center;
+                -webkit-font-smoothing: antialiased;
+            }
+
+            img {
+                width: 2.5rem;
+                height: 2.5rem;
+                margin-bottom: 1.25rem;
+            }
+
+            h1 {
+                margin: 0;
+                font-size: 1.25rem;
+                font-weight: 500;
+            }
+
+            p {
+                margin: 0;
+                max-width: 24rem;
+                color: var(--muted);
+                line-height: 1.6;
+            }
+
+            button {
+                margin-top: 1.25rem;
+                padding: 0.5rem 1.25rem;
+                border: 1px solid var(--border);
+                border-radius: 0.5rem;
+                background: transparent;
+                color: inherit;
+                font: inherit;
+                font-size: 0.875rem;
+                cursor: pointer;
+            }
+
+            button:hover {
+                border-color: var(--muted);
+            }
+        </style>
+    </head>
+    <body>
+        <img src="/favicon.svg" alt="">
+
+        <h1>No connection</h1>
+
+        <p>
+            Summarising a video needs the internet, so there is nothing to show
+            until you are back on it.
+        </p>
+
+        <!--
+            An anchor to the start url rather than history.back(): going back would land
+            on whatever was open when the connection dropped, which is the page that just
+            failed to load.
+        -->
+        <button type="button" onclick="location.assign('/')">Try again</button>
+    </body>
+</html>

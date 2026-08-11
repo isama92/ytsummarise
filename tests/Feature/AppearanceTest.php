@@ -35,6 +35,10 @@ test('no appearance cookie leaves the choice to the browser', function (): void 
  * The layout paints a background before app.css is fetched, so the two files each
  * carry their own copy of the Catppuccin `base` colours. Nothing but this test stops
  * them drifting, and the symptom of drift is a colour flash on every cold load.
+ *
+ * The theme-color metas are a third and fourth copy of the same two values, tinting the
+ * browser chrome and the status bar of the installed application. Drift there is quieter
+ * still: a strip of the wrong colour above a correct page.
  */
 test('the first paint colours in the layout match the theme stylesheet', function (): void {
     $css = (string) file_get_contents(resource_path('css/app.css'));
@@ -46,5 +50,22 @@ test('the first paint colours in the layout match the theme stylesheet', functio
     expect($latte)->toHaveKey(1)
         ->and($frappe)->toHaveKey(1)
         ->and($blade)->toContain("background-color: {$latte[1]};")
-        ->toContain("background-color: {$frappe[1]};");
+        ->toContain("background-color: {$frappe[1]};")
+        ->toContain("content=\"{$latte[1]}\" media=\"(prefers-color-scheme: light)\"")
+        ->toContain("content=\"{$frappe[1]}\" media=\"(prefers-color-scheme: dark)\"");
+});
+
+/*
+ * A fifth copy, in a file the worker serves without any of the application's CSS. Same
+ * drift, and the only place it shows is when somebody is already having a bad time.
+ */
+test('the offline page colours match the theme stylesheet', function (): void {
+    $css = (string) file_get_contents(resource_path('css/app.css'));
+    $offline = (string) file_get_contents(public_path('offline.html'));
+
+    preg_match('/:root\s*\{[^}]*--ctp-base:\s*(#[0-9a-f]{6})/i', $css, $latte);
+    preg_match('/\.dark\s*\{[^}]*--ctp-base:\s*(#[0-9a-f]{6})/i', $css, $frappe);
+
+    expect($offline)->toContain("--background: {$latte[1]};")
+        ->toContain("--background: {$frappe[1]};");
 });

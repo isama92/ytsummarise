@@ -4,8 +4,19 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Auth\AuthenticationController;
 use App\Http\Controllers\Auth\FirstUserController;
+use App\Http\Controllers\ManifestController;
 use App\Http\Controllers\SummaryController;
 use Illuminate\Support\Facades\Route;
+
+/*
+ * In neither group below, which is the whole point of it being up here.
+ *
+ * Behind `auth` the browser's own request for the manifest answers 302 to /login, and the
+ * application is quietly not installable with nothing to see in any log. Inside `guest`
+ * the same thing happens the other way round to anybody signed in. It has to be reachable
+ * in both states, and it says nothing about anybody, so it is reachable by everybody.
+ */
+Route::get('manifest.webmanifest', ManifestController::class)->name('manifest');
 
 Route::middleware('auth')->group(function (): void {
     Route::get('/', [SummaryController::class, 'index'])->name('home');
