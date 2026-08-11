@@ -88,6 +88,21 @@
         "types:check": [
             "phpstan analyse --memory-limit=1G"
         ],
+        "static": [
+            "Composer\\Config::disableProcessTimeout",
+            "@refactor",
+            "@lint",
+            "npm run lint",
+            "npm run format",
+            "@types:check",
+            "npm run types:check"
+        ],
+        "suite": [
+            "Composer\\Config::disableProcessTimeout",
+            "@static",
+            "@php artisan config:clear --ansi",
+            "@php artisan test"
+        ],
         "test": [
             "@php artisan config:clear --ansi",
             "@lint:check",
