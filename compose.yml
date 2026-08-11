@@ -96,6 +96,80 @@ services:
 
     restart: unless-stopped
 
+  # Runs the summarising jobs. Without this the web container accepts a video, writes a
+  # pending row and nothing ever picks it up: the page polls a skeleton forever.
+  #
+  # `queue:work summaries` names the CONNECTION, not the queue. Summarising has its own
+  # connection because retry_after belongs to the connection and this job's timeout is
+  # half an hour; see config/queue.php. A future job on the default connection needs its
+  # own worker here, or it will sit unworked exactly as this one did.
+  queue:
+    image: ghcr.io/isama92/ytsummarise:latest
+    env_file: .env
+    environment: &worker_environment
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DB_CONNECTION: pgsql
+      LOG_CHANNEL: stderr
+
+    # Straight to artisan, deliberately bypassing app-entrypoint.sh. That script migrates,
+    # and three containers starting together would race on it; the web container owns
+    # migrating. Nothing is lost by skipping its caches either, since a worker reads
+    # config from the environment.
+    #
+    # --max-time recycles the process every hour so a leak in a long model call cannot
+    # accumulate. No --tries: the job sets its own, and one attempt is deliberate.
+    entrypoint: ["php", "artisan", "queue:work", "summaries", "--max-time=3600"]
+
+    networks:
+      - default
+      - database
+
+    volumes:
+      - storage:/app/storage
+
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+
+    # Nothing to probe: a worker listens on no port. `docker logs` and the jobs table are
+    # how you tell whether it is working.
+    restart: unless-stopped
+
+    # So a deploy never has a worker running against a database the web container has not
+    # migrated yet.
+    depends_on:
+      ytsummarise:
+        condition: service_healthy
+
+  # Runs the scheduler, which is what expires summaries whose job stopped existing. One
+  # process that wakes every minute, rather than a host cron reaching into the container.
+  scheduler:
+    image: ghcr.io/isama92/ytsummarise:latest
+    env_file: .env
+    environment: *worker_environment
+
+    entrypoint: ["php", "artisan", "schedule:work"]
+
+    networks:
+      - default
+      - database
+
+    volumes:
+      - storage:/app/storage
+
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+
+    restart: unless-stopped
+
+    depends_on:
+      ytsummarise:
+        condition: service_healthy
+
 networks:
   # Traefik's network, created outside this stack.
   web:

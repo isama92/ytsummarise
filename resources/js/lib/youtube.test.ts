@@ -67,6 +67,36 @@ describe('extractVideoId', () => {
         expect(extractVideoId(input)).toBeNull();
     });
 
+    /*
+     * These sit exactly where an id sits and are exactly eleven legal characters, so no
+     * amount of pattern anchoring rejects them and the server cannot either. Nothing but
+     * knowing they are words catches them.
+     */
+    it.each([
+        [
+            'a playlist embed',
+            'https://www.youtube.com/embed/videoseries?list=PLabcdefghij',
+        ],
+        [
+            'a channel live embed',
+            'https://www.youtube.com/embed/live_stream?channel=UCabcdefghijkl',
+        ],
+    ])('refuses %s, which is a word where an id goes', (_label, input) => {
+        expect(extractVideoId(input)).toBeNull();
+    });
+
+    /*
+     * But only where the word is all there is: a real id elsewhere in the same url still
+     * wins, because the v parameter is looked at first.
+     */
+    it('still finds a real id alongside one of those words', () => {
+        expect(
+            extractVideoId(
+                `https://www.youtube.com/embed/videoseries?list=PLabcdefghij&v=${ID}`,
+            ),
+        ).toBe(ID);
+    });
+
     it('keeps the id exactly, including its case and punctuation', () => {
         expect(extractVideoId('https://youtu.be/aB3-_dEfGh1')).toBe(
             'aB3-_dEfGh1',

@@ -167,6 +167,32 @@ test('a video with no title still has a summary', function (): void {
         );
 });
 
+/*
+ * The other half of joining a job already running: once the row has been pending longer
+ * than a video is given, the job it was waiting on is gone, so this really is a new
+ * attempt and its clock has to start again. Leaving the old requested_at in place had the
+ * expiry command write the new attempt off within the minute.
+ */
+test('resubmitting a video that has been pending too long starts a new attempt', function (): void {
+    Queue::fake();
+
+    $summary = Summary::factory()->stalled()->create(['video_id' => 'dQw4w9WgXcQ']);
+    $abandonedAt = $summary->requested_at;
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    Queue::assertPushed(SummariseVideo::class);
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->requested_at->greaterThan($abandonedAt))->toBeTrue()
+        /* And it is no longer a candidate for the command that would have killed it. */
+        ->and(Summary::query()->stalled()->count())->toBe(0);
+});
+
 test('a brand new submission starts its clock straight away', function (): void {
     Queue::fake();
 

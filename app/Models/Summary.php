@@ -6,6 +6,7 @@ namespace App\Models;
 
 use App\Enums\SummaryStatus;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Database\Factories\SummaryFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\RouteKey;
@@ -79,6 +80,18 @@ class Summary extends Model
     }
 
     /**
+     * The moment before which a summary still pending has been waiting too long.
+     *
+     * CarbonInterface rather than CarbonImmutable because the concrete class is whatever
+     * Date::use() was given in AppServiceProvider, and the facade is typed for the
+     * mutable one.
+     */
+    public static function stalledBefore(): CarbonInterface
+    {
+        return Date::now()->subSeconds(config()->integer('summaries.timeout'));
+    }
+
+    /**
      * Summaries that have been pending longer than a video is given.
      *
      * The job may have been killed, never reserved, or lost with the queue it sat in;
@@ -90,6 +103,19 @@ class Summary extends Model
     protected function stalled(Builder $query): void
     {
         $query->where('status', SummaryStatus::Pending)
-            ->where('requested_at', '<=', Date::now()->subSeconds(config()->integer('summaries.timeout')));
+            ->where('requested_at', '<=', self::stalledBefore());
+    }
+
+    /**
+     * Whether this row in particular has been waiting too long.
+     *
+     * Shares its horizon with the scope above on purpose: the controller has to agree
+     * with the expiry command about what stalled means, or one of them starts a new
+     * attempt that the other writes off a minute later.
+     */
+    public function isStalled(): bool
+    {
+        return $this->status === SummaryStatus::Pending
+            && $this->requested_at <= self::stalledBefore();
     }
 }

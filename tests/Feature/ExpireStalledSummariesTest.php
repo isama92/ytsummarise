@@ -6,6 +6,8 @@ use App\Console\Commands\ExpireStalledSummaries;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /*
@@ -56,6 +58,47 @@ test('the timeout is what decides, so shortening it expires more', function (): 
     $this->artisan('summaries:expire-stalled')->assertSuccessful();
 
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Failed);
+});
+
+/*
+ * The window between deciding a row is stalled and writing it off. Simulated by finishing
+ * the row after the command has read it, which is what the guard on the update covers:
+ * without it the row ends up failed with a finished summary still attached, and the page
+ * says "did not work" over an answer that exists.
+ */
+test('a summary that finishes while being written off keeps its summary', function (): void {
+    Log::spy();
+
+    $summary = Summary::factory()->stalled()->create();
+    $raced = false;
+
+    /*
+     * Finish the row the moment the command has read it, which lands the change in the
+     * window between its select and its update - the only place this can go wrong. The
+     * flag keeps the listener from reacting to its own queries.
+     */
+    DB::listen(function (QueryExecuted $query) use ($summary, &$raced): void {
+        if ($raced || ! str_starts_with(strtolower(trim($query->sql)), 'select')) {
+            return;
+        }
+
+        if (! str_contains($query->sql, 'summaries')) {
+            return;
+        }
+
+        $raced = true;
+
+        Summary::query()->whereKey($summary->getKey())->update([
+            'status' => SummaryStatus::Ready,
+            'body' => 'Arrived at the last moment.',
+        ]);
+    });
+
+    $this->artisan('summaries:expire-stalled')->assertSuccessful();
+
+    expect($raced)->toBeTrue()
+        ->and($summary->fresh()?->status)->toBe(SummaryStatus::Ready)
+        ->and($summary->fresh()?->body)->toBe('Arrived at the last moment.');
 });
 
 /*

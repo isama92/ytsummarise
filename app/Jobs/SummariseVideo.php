@@ -24,10 +24,20 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 3;
-
-    /** @var array<int, int> */
-    public array $backoff = [5, 15];
+    /**
+     * One attempt, deliberately.
+     *
+     * Not timidity about retrying: it is what keeps three horizons equal. With more than
+     * one attempt the worst case life of a job is tries × timeout plus the backoff, which
+     * is longer than the uniqueness lock below, so the lock would lapse part way through
+     * the chain and a submission in that window would queue a second paid summary of the
+     * same video. Aligning them means one attempt.
+     *
+     * Nothing is lost: a failure marks the row and the page offers to submit again, so
+     * retrying is a decision rather than an automatic second charge for a call that may
+     * have failed for a reason that will not change.
+     */
+    public int $tries = 1;
 
     /**
      * How long this job may run before the worker kills it.
@@ -61,6 +71,13 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     {
         $this->timeout = config()->integer('summaries.timeout');
         $this->uniqueFor = $this->timeout;
+
+        /*
+         * Its own connection, which is where its retry_after lives; see config/queue.php.
+         * Set here rather than as a property because Queueable already declares an
+         * untyped $connection that a typed override is not allowed to narrow.
+         */
+        $this->onConnection('summaries');
     }
 
     /**
@@ -85,6 +102,16 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      */
     public function handle(): void
     {
+        /*
+         * A job can be delivered twice however careful the configuration is: a worker
+         * killed between finishing and deleting the job leaves it to be reserved again.
+         * Without this the model call is paid for a second time and a summary somebody is
+         * already reading is rewritten. failed() guards the same path from the other side.
+         */
+        if ($this->summary->status === SummaryStatus::Ready) {
+            return;
+        }
+
         Sleep::for(3)->seconds();
 
         $this->summary->update([

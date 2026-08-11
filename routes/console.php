@@ -19,4 +19,11 @@ Artisan::command('inspire', function (): void {
  */
 Schedule::command(ExpireStalledSummaries::class)
     ->everyMinute()
-    ->withoutOverlapping();
+    /*
+     * Two minutes, not the default day. The mutex lives in the cache, which here is the
+     * database, so it survives the restart that killed a run holding it - and at the
+     * default a container going down mid-run would skip this command for twenty-four
+     * hours, which is exactly as long as every summary whose job vanished would spin.
+     * The run itself takes about one indexed query.
+     */
+    ->withoutOverlapping(2);

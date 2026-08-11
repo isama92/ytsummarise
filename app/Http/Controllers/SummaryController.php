@@ -58,11 +58,17 @@ class SummaryController extends Controller
         }
 
         /*
-         * A failed row starts over, and its clock with it. A pending one is left exactly
-         * as it is: whoever asked first is already waiting, and resetting requested_at
-         * would restart their clock and push back the moment this gets written off.
+         * A failed row starts over, and its clock with it. So does one that has been
+         * pending longer than a video is given: the attempt about to be queued below is a
+         * new one, and leaving the old requested_at in place would have the expiry command
+         * write it off within the minute, telling somebody it did not work while it is
+         * actively running.
+         *
+         * A pending row still inside its window is left exactly as it is, because whoever
+         * asked first is already waiting and restarting their clock would both mislead
+         * them and push back the moment this gets written off.
          */
-        if ($summary->status === SummaryStatus::Failed) {
+        if ($summary->status === SummaryStatus::Failed || $summary->isStalled()) {
             $summary->update([
                 'status' => SummaryStatus::Pending,
                 'body' => null,
@@ -109,8 +115,9 @@ class SummaryController extends Controller
     /**
      * The one screen this application has, with or without something on it.
      *
-     * The video id goes back to the browser so the field can show what was extracted
-     * from whatever was pasted.
+     * videoId is not for the field, which is deliberately always empty: the page keys the
+     * summary on it so that asking for a different video replays the fade in rather than
+     * swapping the text underneath it. Deleting it as unused would quietly kill that.
      */
     private function page(?Summary $summary): Response
     {

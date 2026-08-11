@@ -67,19 +67,57 @@ test('a late failure does not throw away a summary that already finished', funct
     Log::shouldHaveReceived('error')->once();
 });
 
-test('the job cannot outlive the timeout, and neither can its lock', function (): void {
-    config(['summaries.timeout' => 1800]);
-
+/*
+ * Reading the configured timeout rather than setting one. Pinning it made this pass for a
+ * value nobody deploys: with SUMMARY_TIMEOUT=3600 the real retry_after was below the real
+ * timeout and the assertion still held, which is the paid double-summarisation this test
+ * exists to prevent.
+ */
+test('the queue cannot reserve the job again while it is still running', function (): void {
     $job = new SummariseVideo(Summary::factory()->pending()->create());
+    $timeout = config()->integer('summaries.timeout');
 
-    expect($job->timeout)->toBe(1800)
-        ->and($job->uniqueFor)->toBe(1800)
+    expect($job->timeout)->toBe($timeout)
+        ->and($job->connection)->toBe('summaries')
+        ->and(config()->integer('queue.connections.summaries.retry_after'))
+        ->toBeGreaterThan($timeout)
         /*
-         * A retry_after below the job's timeout has the worker reserve the job again while
-         * the first copy is still running, and summarising a video twice is a paid mistake.
+         * And the default connection is left where Laravel puts it, so a future job does
+         * not silently inherit half an hour of stall after a worker dies.
          */
         ->and(config()->integer('queue.connections.database.retry_after'))
-        ->toBeGreaterThan($job->timeout);
+        ->toBe(90);
+});
+
+/*
+ * One attempt is what keeps the lock, the timeout and the expiry horizon equal. More
+ * attempts and the worst case life of a job is tries × timeout plus backoff, which
+ * outlasts the lock, and a submission in that window queues a second paid summary of the
+ * same video.
+ */
+test('the uniqueness lock lasts exactly as long as the one attempt it guards', function (): void {
+    $job = new SummariseVideo(Summary::factory()->pending()->create());
+
+    expect($job->tries)->toBe(1)
+        ->and($job->uniqueFor)->toBe($job->timeout)
+        ->and($job->uniqueFor)->toBe(config()->integer('summaries.timeout'));
+});
+
+/*
+ * A worker killed between finishing and deleting the job leaves it to be reserved again.
+ * Running it twice would pay for the model call twice and rewrite a summary somebody is
+ * already reading.
+ */
+test('a job delivered twice does not summarise twice', function (): void {
+    Sleep::fake();
+
+    $summary = Summary::factory()->create(['body' => 'The finished summary.']);
+
+    (new SummariseVideo($summary))->handle();
+
+    expect($summary->fresh()?->body)->toBe('The finished summary.');
+
+    Sleep::assertNeverSlept();
 });
 
 test('one job is in flight per video, not per request', function (): void {

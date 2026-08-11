@@ -14,11 +14,23 @@
  * scoped away from public/, because this runs in a worker rather than in the bundle.
  */
 
+/*
+ * Build assets are deliberately not cached here.
+ *
+ * Caching them looked free because Vite content-hashes the filenames, but nothing ever
+ * pruned the old ones: every deploy added a generation of js, css and fonts to a cache
+ * that only emptied when this version string changed. Left long enough the browser evicts
+ * the whole origin's storage to reclaim it, which takes the offline page with it - so the
+ * cost of caching them was the one thing this worker exists to protect.
+ *
+ * Nothing is lost. The offline page is self-contained, so no build asset is needed to
+ * render it, and hashed filenames are already handled well by the ordinary HTTP cache.
+ */
+
 /* Bump to evict everything: old caches are dropped on activate. */
 const VERSION = 'v1';
 
 const SHELL = `shell-${VERSION}`;
-const ASSETS = `assets-${VERSION}`;
 
 const OFFLINE = '/offline.html';
 
@@ -50,7 +62,7 @@ self.addEventListener('activate', (event) => {
             .then((names) =>
                 Promise.all(
                     names
-                        .filter((name) => name !== SHELL && name !== ASSETS)
+                        .filter((name) => name !== SHELL)
                         .map((name) => caches.delete(name)),
                 ),
             )
@@ -73,18 +85,6 @@ self.addEventListener('fetch', (event) => {
     const url = new URL(request.url);
 
     if (url.origin !== self.location.origin) {
-        return;
-    }
-
-    /*
-     * Vite content-hashes these filenames, which is what makes cache-first safe: a new
-     * build is a new url, so a cached one can never be stale. It is also why there is no
-     * list of files to precache and no build step generating one. The self-hosted
-     * Instrument Sans files live here too.
-     */
-    if (url.pathname.startsWith('/build/assets/')) {
-        event.respondWith(cacheFirst(request));
-
         return;
     }
 
@@ -113,23 +113,6 @@ self.addEventListener('fetch', (event) => {
      * shared prop is ever written to a cache.
      */
 });
-
-async function cacheFirst(request) {
-    const cache = await caches.open(ASSETS);
-    const cached = await cache.match(request);
-
-    if (cached) {
-        return cached;
-    }
-
-    const response = await fetch(request);
-
-    if (response.ok) {
-        await cache.put(request, response.clone());
-    }
-
-    return response;
-}
 
 async function networkThenCache(request) {
     const cache = await caches.open(SHELL);

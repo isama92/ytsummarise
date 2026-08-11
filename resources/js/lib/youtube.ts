@@ -23,6 +23,17 @@ const PATTERNS = [
     new RegExp(`^(${VIDEO_ID})$`),
 ];
 
+/*
+ * Eleven characters of the id alphabet that are not an id.
+ *
+ * /embed/videoseries?list=... embeds a playlist and /embed/live_stream?channel=... embeds
+ * whatever a channel is streaming. Both sit exactly where an id sits and both are exactly
+ * eleven legal characters, so the boundary check has nothing to object to and the server
+ * cannot tell either: it would create a row and pay for a summary of a video that does
+ * not exist.
+ */
+const NOT_IDS = ['videoseries', 'live_stream'];
+
 /**
  * Reduce whatever was pasted to the id the backend accepts, or null when it holds none.
  *
@@ -36,7 +47,7 @@ export function extractVideoId(input: string): string | null {
     for (const pattern of PATTERNS) {
         const match = pattern.exec(trimmed);
 
-        if (match !== null) {
+        if (match !== null && !NOT_IDS.includes(match[1])) {
             return match[1];
         }
     }

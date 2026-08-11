@@ -1,7 +1,7 @@
 import type { FormComponentRef } from '@inertiajs/core';
 import { Form, Head, usePoll } from '@inertiajs/react';
 import { ArrowUp, ClipboardPaste } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState, useSyncExternalStore } from 'react';
 import type { ClipboardEvent } from 'react';
 import { flushSync } from 'react-dom';
 import SummaryController from '@/actions/App/Http/Controllers/SummaryController';
@@ -41,6 +41,44 @@ function elapsedSince(requestedAt: string, now: number): string {
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+/*
+ * Quantised to the second because a snapshot has to be stable between calls: Date.now()
+ * would hand back a different number every time it was asked and React would object.
+ * Still milliseconds, so it can be subtracted from a parsed date.
+ */
+const currentSecond = (): number => Math.floor(Date.now() / 1000) * 1000;
+
+/**
+ * The current time, refreshed once a second while something is being waited on.
+ *
+ * The clock is not React state - it changes on its own - so it is read as an external
+ * store, the same way the appearance hook reads the stored theme. Holding it in state
+ * instead made it as old as the last tick, and since the ticking only runs while a
+ * summary is pending, a resubmit of an hour-old row showed the time the page was opened.
+ * Read this way the value is correct at every render whether it is ticking or not.
+ */
+function useNow(ticking: boolean): number {
+    const subscribe = useCallback(
+        (onChange: () => void) => {
+            if (!ticking) {
+                return () => {};
+            }
+
+            const timer = setInterval(onChange, 1000);
+
+            return () => clearInterval(timer);
+        },
+        /*
+         * Memoised because useSyncExternalStore resubscribes whenever this function's
+         * identity changes: a fresh closure each render would clear and recreate the
+         * interval every render, and it would never survive long enough to fire.
+         */
+        [ticking],
+    );
+
+    return useSyncExternalStore(subscribe, currentSecond);
+}
+
 /**
  * Asks the server for the summary again every couple of seconds.
  *
@@ -62,7 +100,6 @@ export default function Home({ videoId, summary }: HomeProps) {
      * something to clear before it could be used.
      */
     const [query, setQuery] = useState('');
-    const [now, setNow] = useState(() => Date.now());
     const formRef = useRef<FormComponentRef<SummaryForm>>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -70,20 +107,7 @@ export default function Home({ videoId, summary }: HomeProps) {
     const isUnrecognised = query.trim() !== '' && extractedVideoId === null;
     const isPending = summary?.status === 'pending';
 
-    /*
-     * Drives the clock, and only while there is something to time. setNow is called from
-     * the interval rather than from the effect body, so this is a subscription to the
-     * clock rather than the cascading render that setting state during an effect causes.
-     */
-    useEffect(() => {
-        if (!isPending) {
-            return;
-        }
-
-        const timer = setInterval(() => setNow(Date.now()), 1000);
-
-        return () => clearInterval(timer);
-    }, [isPending]);
+    const now = useNow(isPending);
 
     /*
      * Reading the clipboard needs a secure context and a permission the browser can
@@ -107,8 +131,17 @@ export default function Home({ videoId, summary }: HomeProps) {
      */
     const summarisePastedText = (text: string): void => {
         const field = inputRef.current;
-        const start = field?.selectionStart ?? query.length;
-        const end = field?.selectionEnd ?? query.length;
+
+        /*
+         * Only a focused field has a caret worth respecting. selectionStart on an
+         * unfocused input reads 0 rather than null, so without this the paste button
+         * silently prepended to whatever was already typed instead of appending.
+         */
+        const caret = field !== null && field === document.activeElement;
+        const start = caret
+            ? (field.selectionStart ?? query.length)
+            : query.length;
+        const end = caret ? (field.selectionEnd ?? query.length) : query.length;
         const pasted = query.slice(0, start) + text + query.slice(end);
 
         flushSync(() => setQuery(pasted));

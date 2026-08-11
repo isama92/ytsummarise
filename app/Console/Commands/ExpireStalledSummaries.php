@@ -40,8 +40,15 @@ class ExpireStalledSummaries extends Command
             return;
         }
 
+        /*
+         * Still pending, checked again here rather than trusted from the query above. A
+         * row can finish in the moment between the two, and writing it off then would
+         * leave it failed with a finished summary still attached, which the page renders
+         * as "did not work" over an answer that exists.
+         */
         Summary::query()
             ->whereKey($videoIds->keys())
+            ->where('status', SummaryStatus::Pending)
             ->update(['status' => SummaryStatus::Failed]);
 
         /*

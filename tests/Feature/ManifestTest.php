@@ -46,6 +46,26 @@ test('the manifest carries what a browser needs to install it', function (): voi
 });
 
 /*
+ * A sixth and seventh copy of the Catppuccin base colour, and the least visible: these
+ * paint the splash screen and the status bar of the installed application, where nobody
+ * would think to look. AppearanceTest guards the other five; nothing read this one.
+ *
+ * Latte rather than a flavour: a manifest gets one colour and cannot follow a theme, so
+ * both are the light one, which is what a visitor who has never touched the toggle sees.
+ */
+test('the manifest colours match the theme stylesheet', function (): void {
+    $css = (string) file_get_contents(resource_path('css/app.css'));
+
+    preg_match('/:root\s*\{[^}]*--ctp-base:\s*(#[0-9a-f]{6})/i', $css, $latte);
+
+    $manifest = $this->get(route('manifest'))->json();
+
+    expect($latte)->toHaveKey(1)
+        ->and($manifest['theme_color'])->toBe($latte[1])
+        ->and($manifest['background_color'])->toBe($latte[1]);
+});
+
+/*
  * Renaming an icon should break a test rather than an install: nothing else in the
  * application references these three files, so nothing else would notice.
  */
