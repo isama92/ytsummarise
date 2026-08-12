@@ -53,55 +53,39 @@ return new class extends Migration
             $table->text('body')->nullable();
 
             /*
-             * When the attempt currently in flight was asked for, which is what the page
-             * counts up from while it waits and what decides when a summary nothing has
-             * started has waited so long that nothing is going to.
+             * When the attempt currently in flight was asked for. What the page counts up
+             * from while it waits, and what decides when an attempt has been pending long
+             * enough to give up on.
              *
-             * Not created_at: a row outlives its attempts. Retrying a summary that failed
-             * starts a new clock, while somebody joining a job already running has to see
-             * the time the person before them has already waited, not zero.
+             * Not created_at: a row outlives its attempts. Set again every time one starts,
+             * so a video summarised yesterday and asked for again a minute ago has a minute
+             * on the clock rather than a day, while somebody joining a job already running
+             * sees the time the person before them has already waited rather than zero.
              */
             $table->timestamp('requested_at');
 
             /*
              * When a worker actually began, which is a different question from when it was
              * asked for: a job can sit in a queue behind another for as long as that one
-             * takes. Timing a timeout from requested_at compared an enqueue time against a
-             * runtime budget, and wrote summaries off while their jobs were still queued.
+             * takes. The page says "Queued" or "Processing" on the strength of this.
              *
              * Null means no worker has started, and setting it is how a job claims the row:
              * the update is conditional on it still being null, so of two jobs for the same
              * video exactly one can win and the other returns having done nothing. That is
              * a guarantee from the database rather than from a lock's expiry.
+             *
+             * Cleared whenever an attempt restarts, or the row is claimed for an attempt
+             * nobody is working on and every job for it returns having done nothing.
              */
             $table->timestamp('started_at')->nullable();
-
-            /*
-             * When the recovery command last queued a job for this row again, which is what
-             * stops it doing so every hour for as long as the row waits.
-             *
-             * Null is the ordinary state and means never, so the first requeue is prompt -
-             * a job lost with its queue is repaired at the next run rather than hours
-             * later. After that the row is left alone for a good while, because a second
-             * requeue only helps if the first one was lost too, and an outage lasting a day
-             * would otherwise leave every waiting summary with a day's worth of duplicate
-             * jobs to drain.
-             *
-             * Cleared whenever an attempt restarts, along with started_at, for the same
-             * reason: a stale value here suppresses the requeue for the new attempt.
-             */
-            $table->timestamp('requeued_at')->nullable();
 
             $table->timestamps();
 
             /*
-             * The three queries the recovery command runs, which do not share one index.
-             *
-             * Rows a worker abandoned are found by how long ago it started, while the two
-             * halves of the set nothing has started - still worth queueing again, and
-             * waited too long to be - are split on how long ago it was asked for.
+             * The one query the expiry command runs: pending attempts old enough to give
+             * up on. started_at is deliberately not in here - nothing searches by it, the
+             * job reads it one row at a time by primary key.
              */
-            $table->index(['status', 'started_at']);
             $table->index(['status', 'requested_at']);
         });
     }

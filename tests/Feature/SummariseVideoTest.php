@@ -76,6 +76,31 @@ test('the first of two jobs pays and the second does not', function (): void {
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
 });
 
+/*
+ * The other half of the status guard, and what keeps one blunt horizon from costing anything.
+ * summaries:expire does not ask whether a worker ever picked a row up, so a job queued behind
+ * a long enough backlog is written off while it is still perfectly alive. This is where that
+ * stops: the job re-reads the status it was handed and leaves a written-off attempt alone
+ * rather than paying for a summary the page has already offered to try again.
+ */
+test('a job whose attempt was given up on does nothing', function (): void {
+    Sleep::fake();
+
+    /* As summaries:expire leaves a row nothing ever started: failed, and never claimed. */
+    $summary = Summary::factory()->failed()->create(['started_at' => null]);
+
+    (new SummariseVideo($summary->fresh()))->handle();
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        ->and($summary->body)->toBeNull()
+        /* And not claimed on the way past, which would make the retry unworkable. */
+        ->and($summary->started_at)->toBeNull();
+
+    Sleep::assertNeverSlept();
+});
+
 test('the job stands in for the latency of the model call', function (): void {
     Sleep::fake();
 

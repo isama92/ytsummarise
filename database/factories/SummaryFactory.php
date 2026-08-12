@@ -61,42 +61,17 @@ class SummaryFactory extends Factory
     }
 
     /**
-     * A summary a worker claimed and then abandoned, having been killed mid job.
+     * A summary whose attempt has been pending long enough to give up on.
      *
-     * The age is on started_at, not requested_at: the timeout is a budget for doing the
-     * work, so how long ago somebody asked says nothing about whether a worker has gone.
+     * The age is on requested_at and started_at is left null, which is the ordinary shape of
+     * one: a job that stopped existing before any worker reached it. A row a worker did claim
+     * and then abandoned is the same set as far as the expiry command is concerned, so pass
+     * a started_at when a test needs one rather than making a second state for it.
      */
-    public function stalled(): static
+    public function stale(): static
     {
         return $this->pending()->state(fn (): array => [
-            'started_at' => Date::now()->subSeconds(config()->integer('summaries.timeout') + 1),
-        ]);
-    }
-
-    /**
-     * A summary still waiting its turn that the recovery command has already queued again.
-     *
-     * Deliberately still unclaimed: the record of a requeue says a job was dispatched, not
-     * that anything picked it up, which is the whole reason the row is still here.
-     */
-    public function requeued(): static
-    {
-        return $this->pending()->state(fn (): array => [
-            'requeued_at' => Date::now(),
-        ]);
-    }
-
-    /**
-     * A summary nothing ever started, having waited long enough that nothing ever will.
-     *
-     * The mirror of stalled above and the other way an attempt ends. The age is on
-     * requested_at because there is no started_at to put it on: that is the whole
-     * distinction, and it is measured against the far longer of the two horizons.
-     */
-    public function neverStarted(): static
-    {
-        return $this->pending()->state(fn (): array => [
-            'requested_at' => Date::now()->subSeconds(config()->integer('summaries.abandon_after') + 1),
+            'requested_at' => Date::now()->subSeconds(config()->integer('summaries.stale_after') + 1),
         ]);
     }
 

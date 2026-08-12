@@ -58,34 +58,35 @@ class SummaryController extends Controller
         }
 
         /*
-         * Three ways the attempt on this row is over: it failed, its worker went missing
-         * mid job, or nothing ever picked it up and enough time has passed to stop
-         * expecting anything to. Each starts over, and the clock restarts with them.
+         * Whether this request starts an attempt, answered before anything is written.
          *
-         * So does the claim: leaving started_at set would make the row unclaimable, and
-         * every job queued for it from then on would find somebody else apparently working
-         * and return having done nothing.
+         * Two ways it does: this request created the row, or the last attempt on it failed
+         * and somebody is asking again. Everything else is an attempt already under way, and
+         * this request joins it rather than starting a second - the page picks up the clock
+         * already running and says whether a worker has reached it yet.
          *
-         * And so does the record of the last requeue, for the same reason one step removed.
-         * A new attempt that inherited it would be passed over by the recovery command for
-         * hours on the strength of a job queued for the attempt before it, which is exactly
-         * the stretch where a lost dispatch most needs replacing.
-         *
-         * A row somebody is working on, or one still plausibly waiting its turn, is left
-         * exactly as it is. Whoever asked first is already waiting, and restarting their
-         * clock would mislead them; the dispatch below is what joins them to it.
+         * A pending row is left exactly as it is, however long it has been pending.
+         * Restarting its clock would mislead whoever is already waiting on it, and queueing
+         * a second job would be paying twice for one video. When nothing is going to come of
+         * it, summaries:expire says so, and asking again after that is a retry.
          */
-        if (
-            $summary->status === SummaryStatus::Failed
-            || $summary->isStalled()
-            || $summary->hasWaitedTooLong()
-        ) {
+        $startsAttempt = $summary->wasRecentlyCreated
+            || $summary->status === SummaryStatus::Failed;
+
+        /*
+         * A retry is a new attempt, so its clock starts again - which also puts it back at
+         * the beginning of the horizon summaries:expire measures.
+         *
+         * The claim goes with it. Leaving started_at set would make the row unclaimable, and
+         * every job queued for it from then on would find somebody else apparently working
+         * on it and return having done nothing at all.
+         */
+        if ($summary->status === SummaryStatus::Failed) {
             $summary->update([
                 'status' => SummaryStatus::Pending,
                 'body' => null,
                 'requested_at' => Date::now(),
                 'started_at' => null,
-                'requeued_at' => null,
             ]);
         }
 
@@ -100,19 +101,16 @@ class SummaryController extends Controller
         }
 
         /*
-         * Dispatched for anything not ready, including a row already pending. That is not a
-         * duplicate: the job is unique per video, so while one is in flight this is dropped
-         * and the browser simply joins it. Should the lock have lapsed and two end up
-         * queued, the claim in the job settles which one does the work.
+         * The only place a job is queued, and only for a request that started an attempt.
          *
-         * Asking again for a row that failed always reaches the queue, which is less obvious
-         * than it looks. A job that failed by throwing releases the lock on its way out. A
-         * job whose worker was killed releases nothing, but its lock runs from when it was
-         * dispatched while the row is only written off a whole timeout after the work
-         * started - and work starts no earlier than dispatch, so by the time anybody can see
-         * a failure to resubmit, the lock has already lapsed.
+         * Two people asking for the same new video in the same instant both reach
+         * firstOrCreate and one of them loses to the unique index on video_id, so only the
+         * one that created the row dispatches. Two retrying the same failed row both do, and
+         * the uniqueness lock drops the second before it reaches the queue.
          */
-        SummariseVideo::dispatch($summary);
+        if ($startsAttempt) {
+            SummariseVideo::dispatch($summary);
+        }
 
         return redirect()->route('summaries.show', $summary);
     }

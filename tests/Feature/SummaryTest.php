@@ -170,90 +170,16 @@ test('a video with no title still has a summary', function (): void {
 });
 
 /*
- * The other half of joining a job already running: once the row has been pending longer
- * than a video is given, the job it was waiting on is gone, so this really is a new
- * attempt and its clock has to start again. Leaving the old requested_at in place had the
- * expiry command write the new attempt off within the minute.
+ * A pending row is joined and never restarted, however old it is. Restarting its clock would
+ * mislead whoever is already waiting on it, and a second job for it would be a second paid
+ * summary of one video. Nothing here is the controller's to judge: while the row says pending
+ * the attempt is somebody's to finish, and when it is not, summaries:expire says so and this
+ * becomes a retry.
  */
-test('resubmitting a video whose worker went missing starts a new attempt', function (): void {
+test('a pending video is joined rather than restarted, however long it has been pending', function (string $age): void {
     Queue::fake();
 
-    $summary = Summary::factory()->stalled()->create([
-        'video_id' => 'dQw4w9WgXcQ',
-        'requested_at' => Date::now()->subHour(),
-    ]);
-
-    $abandonedAt = $summary->requested_at;
-
-    $this->actingAs(User::factory()->create())
-        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
-        ->assertRedirect(route('summaries.show', $summary));
-
-    Queue::assertPushed(SummariseVideo::class);
-
-    $summary->refresh();
-
-    expect($summary->status)->toBe(SummaryStatus::Pending)
-        ->and($summary->requested_at->greaterThan($abandonedAt))->toBeTrue()
-        /*
-         * The claim is released with the clock. Leaving started_at set would make the row
-         * unclaimable, and every job queued for it from then on would find somebody else
-         * apparently working on it and return having done nothing at all.
-         */
-        ->and($summary->started_at)->toBeNull()
-        /* And it is no longer a candidate for the command that would have killed it. */
-        ->and(Summary::query()->stalled()->count())->toBe(0);
-});
-
-/*
- * The third way an attempt is over, and the one with no worker to blame: nothing ever picked
- * the row up, and it has waited past the point of expecting anything to. The controller has
- * to reach the same verdict the recovery command does, or somebody is handed a page that
- * waits on a row the next hourly run is about to write off.
- */
-test('resubmitting a video nothing ever started starts a new attempt', function (): void {
-    Queue::fake();
-
-    $summary = Summary::factory()->neverStarted()->create([
-        'video_id' => 'dQw4w9WgXcQ',
-        /* Queued again at some point on the way, without anything ever picking it up. */
-        'requeued_at' => Date::now()->subHours(2),
-    ]);
-
-    $waitedSince = $summary->requested_at;
-
-    $this->actingAs(User::factory()->create())
-        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
-        ->assertRedirect(route('summaries.show', $summary));
-
-    Queue::assertPushed(SummariseVideo::class);
-
-    $summary->refresh();
-
-    expect($summary->status)->toBe(SummaryStatus::Pending)
-        ->and($summary->requested_at->greaterThan($waitedSince))->toBeTrue()
-        ->and($summary->started_at)->toBeNull()
-        /*
-         * Cleared with the claim. A new attempt carrying the old record would be passed
-         * over by the recovery command for hours on the strength of a job queued for the
-         * attempt before it.
-         */
-        ->and($summary->requeued_at)->toBeNull()
-        /* And no longer a row the command would give up on. */
-        ->and(Summary::query()->neverStarted()->count())->toBe(0)
-        /* It is one the command would queue again, though, which is the point of clearing it. */
-        ->and(Summary::query()->dueForRequeue()->count())->toBe(1);
-});
-
-/*
- * The bound on that, and the reason it is a second horizon rather than the timeout again.
- * How long the work itself is given says nothing about how long a job may wait for a worker,
- * and restarting the clock here would mislead whoever is already watching it.
- */
-test('a video that has waited longer than the work is given is still joined rather than restarted', function (): void {
-    Queue::fake();
-
-    $askedAt = Date::now()->subSeconds(config()->integer('summaries.timeout') + 1);
+    $askedAt = Date::now()->sub($age);
 
     $summary = Summary::factory()->pending()->create([
         'video_id' => 'dQw4w9WgXcQ',
@@ -264,8 +190,21 @@ test('a video that has waited longer than the work is given is still joined rath
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
         ->assertRedirect(route('summaries.show', $summary));
 
-    expect($summary->fresh()?->requested_at->timestamp)->toBe($askedAt->timestamp);
-});
+    /* Not a second job for a video somebody is already summarising. */
+    Queue::assertNothingPushed();
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->requested_at->timestamp)->toBe($askedAt->timestamp)
+        ->and($summary->started_at)->toBeNull();
+})->with([
+    'asked for four minutes ago' => '4 minutes',
+    /* Past the time the work itself gets, which says nothing about how long it may wait. */
+    'asked for longer than the work gets' => '31 minutes',
+    /* And past the horizon, which is the expiry command's business rather than this one's. */
+    'asked for longer than the horizon' => '7 hours',
+]);
 
 /*
  * The whole way round, because the claim is a return-early and a stale one would make a row
@@ -280,11 +219,15 @@ test('a summary that failed holding a claim is really summarised when asked for 
     Sleep::fake();
     Log::spy();
 
-    $summary = Summary::factory()->stalled()->create(['video_id' => 'dQw4w9WgXcQ']);
+    $summary = Summary::factory()->stale()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        /* Claimed by a worker that then went missing, so the row is stale and holds one. */
+        'started_at' => Date::now()->subMinutes(5),
+    ]);
 
     match ($route) {
         /* The command's write-off leaves the claim where it was: it only changes status. */
-        'command' => $this->artisan('summaries:recover')->assertSuccessful(),
+        'command' => $this->artisan('summaries:expire')->assertSuccessful(),
         /* And the job failing on its own is the same shape reached from the other side. */
         'job' => (new SummariseVideo($summary))->failed(new RuntimeException('no transcript')),
     };
@@ -312,7 +255,7 @@ test('a summary that failed holding a claim is really summarised when asked for 
         ->and($summary->body)->not->toBeEmpty()
         ->and($summary->started_at)->not->toBeNull();
 })->with([
-    'written off by the recovery command' => 'command',
+    'written off by the expiry command' => 'command',
     'failed by the job itself' => 'job',
 ]);
 

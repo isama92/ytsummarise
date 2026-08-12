@@ -31,9 +31,8 @@ use Override;
  * @property string|null $body
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
- * @property CarbonImmutable|null $requeued_at
  */
-#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at', 'started_at', 'requeued_at'])]
+#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at', 'started_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -79,174 +78,45 @@ class Summary extends Model
             'status' => SummaryStatus::class,
             'requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
-            'requeued_at' => 'immutable_datetime',
         ];
     }
 
     /**
-     * The moment before which a worker that started has been at it too long.
+     * The moment before which an attempt still pending has been pending too long.
      *
-     * Compared against started_at and never against requested_at: the timeout is a budget
-     * for doing the work, and a job can sit in a queue for as long as the jobs ahead of it
-     * take. Comparing it to when somebody asked wrote summaries off mid-flight.
+     * Compared against requested_at, which is set every time an attempt starts, so this
+     * measures the attempt in flight rather than the age of the row: a video summarised
+     * yesterday and asked for again a minute ago has a minute on the clock, not a day.
+     *
+     * A liveness horizon and not a budget for the work. What the work itself gets is
+     * summaries.timeout, which the worker enforces; this only asks whether anything is
+     * still going to happen, and it is generous because being wrong costs somebody a
+     * summary they have to ask for twice.
      *
      * CarbonInterface rather than CarbonImmutable because the concrete class is whatever
      * Date::use() was given in AppServiceProvider, and the facade is typed for the
      * mutable one.
      */
-    public static function stalledBefore(): CarbonInterface
+    public static function staleBefore(): CarbonInterface
     {
-        return Date::now()->subSeconds(config()->integer('summaries.timeout'));
+        return Date::now()->subSeconds(config()->integer('summaries.stale_after'));
     }
 
     /**
-     * The moment before which a summary nothing has started is never going to be started.
+     * Summaries whose attempt has been pending long enough to give up on.
      *
-     * Compared against requested_at, which is the opposite of the horizon above and right
-     * for the opposite reason: nothing here has a started_at to measure from, and the
-     * question is how long somebody has been waiting rather than how long the work has run.
-     *
-     * Far more generous than the timeout, because waiting is ordinary and being wrong about
-     * it costs a page that waits too long rather than a summary written off mid flight.
-     */
-    public static function abandonedBefore(): CarbonInterface
-    {
-        return Date::now()->subSeconds(config()->integer('summaries.abandon_after'));
-    }
-
-    /**
-     * The moment before which a summary already queued again may be queued again.
-     *
-     * Compared against requeued_at, and only ever reached by a row that has one: a row
-     * nobody has requeued is requeued at once, so this spaces out the repetition rather
-     * than delaying the repair.
-     */
-    public static function requeueableBefore(): CarbonInterface
-    {
-        return Date::now()->subSeconds(config()->integer('summaries.requeue_after'));
-    }
-
-    /**
-     * Summaries a worker began and did not finish.
-     *
-     * Its own timeout should have killed it and failed the row, so anything here lost its
-     * worker outright - killed rather than stopped. These are written off.
+     * The only set the expiry command works from, and deliberately blunt: it does not ask
+     * whether a worker ever picked the row up. A job queued behind a long enough backlog is
+     * in here while it is still perfectly alive, and will be written off and then stop at
+     * the status guard in the job when a worker finally reaches it. That is the cost of one
+     * horizon instead of two, and the horizon is sized so it is rare rather than impossible.
      *
      * @param  Builder<Summary>  $query
      */
     #[Scope]
-    protected function stalled(Builder $query): void
+    protected function stale(Builder $query): void
     {
         $query->where('status', SummaryStatus::Pending)
-            ->whereNotNull('started_at')
-            ->where('started_at', '<=', self::stalledBefore());
-    }
-
-    /**
-     * Summaries no worker has started.
-     *
-     * Half a question on purpose, and not one the recovery command asks: "nobody started
-     * this" says nothing about whether anybody still might, and the two answers want
-     * opposite treatment. The two scopes below are those answers, and they split this set
-     * between them at the horizon above so that no row can ever be in both. Reach for one
-     * of those rather than this one, or a row gets queued again and written off in the
-     * same breath.
-     *
-     * @param  Builder<Summary>  $query
-     */
-    #[Scope]
-    protected function unclaimed(Builder $query): void
-    {
-        $query->where('status', SummaryStatus::Pending)
-            ->whereNull('started_at');
-    }
-
-    /**
-     * Summaries no worker has started, that a worker may still plausibly get to.
-     *
-     * Ordinary for as long as a job is queued, and indistinguishable from a job that no
-     * longer exists - flushed with its queue, or dropped because the uniqueness lock was
-     * still held by a job that had already died. Rather than guess which, the recovery
-     * command queues these again: with the claim in place a duplicate dispatch is harmless,
-     * so nothing is lost by being wrong about it.
-     *
-     * @param  Builder<Summary>  $query
-     */
-    #[Scope]
-    protected function awaitingWorker(Builder $query): void
-    {
-        $query->unclaimed()
-            ->where('requested_at', '>', self::abandonedBefore());
-    }
-
-    /**
-     * Summaries nothing ever started, for long enough that nothing ever will.
-     *
-     * The bound on the scope above and its exact complement. Queueing a waiting summary
-     * again is right for as long as there is any reason to think a worker will get to it,
-     * and this is where that stops: a queue that has not once started this job in a day is
-     * not busy, it is not running. These are written off.
-     *
-     * @param  Builder<Summary>  $query
-     */
-    #[Scope]
-    protected function neverStarted(Builder $query): void
-    {
-        $query->unclaimed()
-            ->where('requested_at', '<=', self::abandonedBefore());
-    }
-
-    /**
-     * Summaries worth queueing a job for again on this run in particular.
-     *
-     * Narrower than awaitingWorker and deliberately built on top of it rather than folded
-     * into it. Which of the two horizons a row falls on decides its fate, and those two
-     * scopes divide every unclaimed row between them so that none can be queued again and
-     * written off by the same run. This only decides whether a row that is going to be
-     * queued again eventually is queued again now, so it must not join that split - a row
-     * held back here is still awaiting a worker, and still not one to give up on.
-     *
-     * Null requeued_at passes, which is what keeps the first requeue prompt.
-     *
-     * @param  Builder<Summary>  $query
-     */
-    #[Scope]
-    protected function dueForRequeue(Builder $query): void
-    {
-        $query->awaitingWorker()
-            ->where(fn (Builder $requeued): Builder => $requeued
-                ->whereNull('requeued_at')
-                ->orWhere('requeued_at', '<=', self::requeueableBefore()));
-    }
-
-    /**
-     * Whether the worker on this row in particular has gone.
-     *
-     * Shares its horizon with the stalled scope on purpose: the controller has to agree
-     * with the recovery command, or one starts an attempt the other writes off.
-     */
-    public function isStalled(): bool
-    {
-        return $this->status === SummaryStatus::Pending
-            && $this->started_at !== null
-            && $this->started_at <= self::stalledBefore();
-    }
-
-    /**
-     * Whether this row in particular has waited so long that nothing is going to start it.
-     *
-     * The counterpart of isStalled for the other way an attempt ends, and it shares the
-     * neverStarted horizon for the same reason: the controller has to agree with the
-     * recovery command, or one starts an attempt the other writes off.
-     *
-     * Deliberately not "has it been pending a while". A row a worker is holding is excluded
-     * by the null check, and answering yes for one of those would have the controller clear
-     * a live claim and let a second job summarise the same video.
-     */
-    public function hasWaitedTooLong(): bool
-    {
-        return $this->status === SummaryStatus::Pending
-            && $this->started_at === null
-            && $this->requested_at <= self::abandonedBefore();
+            ->where('requested_at', '<=', self::staleBefore());
     }
 }

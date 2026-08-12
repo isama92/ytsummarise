@@ -22,4 +22,6 @@ Where the work costs money or must not be repeated, open handle() with a conditi
 
     if ($claimed === 0) { return; }
 
-Two consequences worth keeping: whatever resets the row for a retry must clear the claim too, or it is unclaimable forever and every later job returns having done nothing. And a timeout has to be measured from the claim, never from when the row was created - comparing a runtime budget against an enqueue time writes rows off while their jobs are still queued.
+Two consequences worth keeping: whatever resets the row for a retry must clear the claim too, or it is unclaimable forever and every later job returns having done nothing.
+
+And keep a runtime budget separate from a liveness horizon. The budget belongs to the work and runs from the claim - that is SUMMARY_TIMEOUT, and the worker enforces it. The horizon asks whether an attempt is still alive at all, runs from when it was asked for, and is deliberately blunt: it will write off a job still queued behind a long enough backlog, so it is sized so that is rare rather than impossible, and the job re-reads the status before doing anything so nothing is paid for either way.

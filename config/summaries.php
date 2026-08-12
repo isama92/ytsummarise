@@ -13,25 +13,19 @@ return [
     | for waiting to be started: a job sits in the queue behind every job ahead
     | of it, and none of that time is counted here.
     |
-    | One value doing three jobs on purpose, so they cannot disagree:
+    | One value doing two jobs on purpose, so they cannot disagree:
     |
     |   - the queue worker's timeout for SummariseVideo
     |   - the lifetime of the lock that lets a second person asking for the same
-    |     video join the job already running instead of starting another
-    |   - how long after a worker *started* a summary it is written off as
-    |     failed, so a page waiting on a worker that died stops waiting.
-    |     Measured from started_at, and only ever applied to a row some worker
-    |     claimed; one nobody has started yet is queued again instead, however
-    |     long it has been waiting.
+    |     video join the job already running instead of starting another.
     |
     | Nothing to keep in step by hand: the `summaries` connection in
     | config/queue.php derives its own retry_after from this value, because a
     | retry_after below a job's timeout has the queue hand the job to a second
     | worker while the first is still running.
     |
-    | Floored at a minute rather than trusted blindly: a zero here, from an
-    | empty or unparseable value, would write off every summary the instant a
-    | worker picked it up.
+    | Floored at a minute rather than trusted blindly, so an empty or
+    | unparseable value cannot leave the work with no time to run in.
     |
     */
 
@@ -39,60 +33,34 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Abandon After
+    | Stale After
     |--------------------------------------------------------------------------
     |
-    | How long a summary may wait for a worker to start it at all, in seconds,
-    | before it is written off.
+    | How long a summary may stay pending, in seconds, before it is given up on
+    | and marked failed.
     |
-    | A backstop and nothing else. Waiting is ordinary - a job sits behind every
-    | job ahead of it - so the recovery command queues a waiting summary again
-    | rather than giving up on it, and this is only the point at which that
-    | stops being a backlog and starts being a worker that is not running. A day
-    | of a queue never once starting a job is not a busy queue.
+    | Measured from requested_at, which is set every time an attempt starts, so
+    | it is the age of the attempt in flight rather than of the row.
     |
-    | Which is why it can be generous where the timeout above cannot. That one
-    | has to be short enough to notice a dead worker; this one only has to be
-    | longer than any real backlog, and being wrong about it costs a page that
-    | waits too long rather than a summary written off mid flight.
+    | Nothing is queued again as a result. A summary written off here stays
+    | written off until somebody asks for that video again, which is the whole
+    | policy: the page says it did not work and offers to try once more, and a
+    | person deciding to is cheaper and more honest than a command guessing on
+    | their behalf.
     |
-    | Floored at the timeout, because a summary cannot be given up on for never
-    | starting sooner than one that started would be given up on for stopping.
+    | Deliberately blunt about what it cannot see. It does not ask whether a
+    | worker ever picked the row up, so a job queued behind a backlog longer
+    | than this is written off while it is still alive - and when a worker
+    | reaches it, the status guard in SummariseVideo stops it before anything is
+    | paid for. Sized generously so that stays rare: six hours is far longer
+    | than any real backlog, while still being an answer rather than a spinner
+    | somebody watches all week.
+    |
+    | Floored at the timeout, because a summary cannot be given up on sooner
+    | than the work is allowed to take.
     |
     */
 
-    'abandon_after' => max($timeout, (int) env('SUMMARY_ABANDON_AFTER', 86400)),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Requeue After
-    |--------------------------------------------------------------------------
-    |
-    | How long the recovery command leaves a summary alone, in seconds, after
-    | queueing a job for it again.
-    |
-    | Only ever about the second requeue and the ones after it. A summary that
-    | has never been requeued is requeued at the next run whatever this says,
-    | so a job lost with its queue is repaired within the hour.
-    |
-    | What this bounds is the repetition. The command cannot tell a job waiting
-    | its turn from one that no longer exists, so it queues again and lets the
-    | claim make a duplicate harmless - but running hourly against a lock that
-    | lapses in half an hour, it did that to every waiting summary every hour,
-    | and an outage lasting until the abandon horizon left each one with a day's
-    | worth of duplicates for the workers to drain on their way back.
-    |
-    | Six hours against a day of waiting is four attempts rather than
-    | twenty-four, which is the trade: a second requeue only helps in the
-    | unlikely case that the first was lost as well, so they are worth spacing
-    | out, and anything still unstarted at the end is written off and said so
-    | rather than retried in silence forever.
-    |
-    | Floored at the timeout, because requeueing while the previous dispatch's
-    | uniqueness lock is still held only records a requeue that never happened.
-    |
-    */
-
-    'requeue_after' => max($timeout, (int) env('SUMMARY_REQUEUE_AFTER', 21600)),
+    'stale_after' => max($timeout, (int) env('SUMMARY_STALE_AFTER', 21600)),
 
 ];

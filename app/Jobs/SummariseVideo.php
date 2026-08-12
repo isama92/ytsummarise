@@ -107,12 +107,19 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     public function handle(): void
     {
         /*
-         * A job can be delivered twice however careful the configuration is: a worker
-         * killed between finishing and deleting the job leaves it to be reserved again.
-         * Without this the model call is paid for a second time and a summary somebody is
-         * already reading is rewritten. failed() guards the same path from the other side.
+         * Anything but pending and there is nothing to do here.
+         *
+         * Ready covers a job delivered twice, which happens however careful the
+         * configuration is: a worker killed between finishing and deleting the job leaves it
+         * to be reserved again. Without this the model call is paid for a second time and a
+         * summary somebody is already reading is rewritten. failed() guards it from the
+         * other side.
+         *
+         * Failed covers the expiry command having given up on this attempt while the job sat
+         * in the queue. Nothing is paid for a summary the page has already said did not work
+         * and offered to try again; whoever asks again starts a fresh attempt.
          */
-        if ($this->summary->status === SummaryStatus::Ready) {
+        if ($this->summary->status !== SummaryStatus::Pending) {
             return;
         }
 
