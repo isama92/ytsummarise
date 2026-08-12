@@ -44,6 +44,30 @@ return [
             'after_commit' => false,
         ],
 
+        /*
+         * Summarising has its own connection because retry_after is a property of the
+         * connection rather than of the job, and this job's timeout is half an hour.
+         * Leaving it on `database` would mean every future job - a webhook, an email -
+         * waiting half an hour to be picked up again after a worker died, to accommodate
+         * one slow job. Its own queue name too, so a worker on one connection cannot
+         * reserve the other's rows out of the shared table.
+         *
+         * retry_after is derived rather than configured: it has to stay above the job's
+         * timeout or the worker reserves a job that is still running, and summarising a
+         * video twice is a paid mistake. Reading the env here rather than
+         * config('summaries.timeout') because config files load alphabetically, so
+         * summaries.php does not exist yet when this one is read. The floor is repeated
+         * from there for the same reason; SummariseVideoTest asserts the two agree.
+         */
+        'summaries' => [
+            'driver' => 'database',
+            'connection' => env('DB_QUEUE_CONNECTION'),
+            'table' => env('DB_QUEUE_TABLE', 'jobs'),
+            'queue' => 'summaries',
+            'retry_after' => max(60, (int) env('SUMMARY_TIMEOUT', 1800)) + 60,
+            'after_commit' => false,
+        ],
+
         'beanstalkd' => [
             'driver' => 'beanstalkd',
             'host' => env('BEANSTALKD_QUEUE_HOST', 'localhost'),

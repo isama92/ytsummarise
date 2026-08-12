@@ -1,13 +1,30 @@
 import type { SVGAttributes } from 'react';
 
+/**
+ * A play triangle and three lines: a video going in, a summary coming out.
+ *
+ * Fill only, with nothing set on the shapes themselves, so they inherit whatever the
+ * caller puts on the svg. Every use passes the current text colour, which is what lets
+ * one mark serve both Catppuccin flavours. The corner radii are here for the same reason
+ * the pill and the buttons have them.
+ *
+ * public/favicon.svg is the same geometry on a rosewater tile; keep the two in step.
+ *
+ * The viewBox is cropped to the shapes plus a unit of air rather than being the square
+ * canvas they were drawn on, so the mark fills whatever box a caller sizes it into.
+ * Whitespace around the logo belongs to the layout, not to the asset.
+ */
 export default function AppLogoIcon(props: SVGAttributes<SVGElement>) {
     return (
-        <svg {...props} viewBox="0 0 40 42" xmlns="http://www.w3.org/2000/svg">
-            <path
-                fillRule="evenodd"
-                clipRule="evenodd"
-                d="M17.2 5.63325L8.6 0.855469L0 5.63325V32.1434L16.2 41.1434L32.4 32.1434V23.699L40 19.4767V9.85547L31.4 5.07769L22.8 9.85547V18.2999L17.2 21.411V5.63325ZM38 18.2999L32.4 21.411V15.2545L38 12.1434V18.2999ZM36.9409 10.4439L31.4 13.5221L25.8591 10.4439L31.4 7.36561L36.9409 10.4439ZM24.8 18.2999V12.1434L30.4 15.2545V21.411L24.8 18.2999ZM23.8 20.0323L29.3409 23.1105L16.2 30.411L10.6591 27.3328L23.8 20.0323ZM7.6 27.9212L15.2 32.1434V38.2999L2 30.9666V7.92116L7.6 11.0323V27.9212ZM8.6 9.29991L3.05913 6.22165L8.6 3.14339L14.1409 6.22165L8.6 9.29991ZM30.4 24.8101L17.2 32.1434V38.2999L30.4 30.9666V24.8101ZM9.6 11.0323L15.2 7.92117V22.5221L9.6 25.6333V11.0323Z"
-            />
+        <svg
+            {...props}
+            viewBox="4 5.5 33 29"
+            xmlns="http://www.w3.org/2000/svg"
+        >
+            <path d="M5 8.4A2.2 2.2 0 0 1 8.4 6.5L19.8 18.2a2.5 2.5 0 0 1 0 3.6L8.4 33.5A2.2 2.2 0 0 1 5 31.6Z" />
+            <rect x="25" y="13" width="11" height="3.6" rx="1.8" />
+            <rect x="25" y="19.7" width="11" height="3.6" rx="1.8" />
+            <rect x="25" y="26.4" width="7" height="3.6" rx="1.8" />
         </svg>
     );
 }

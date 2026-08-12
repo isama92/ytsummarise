@@ -31,3 +31,8 @@ docker run --rm -v "$PWD":/app -w /app ytsummarise-coverage \
 `vendor/` is pure PHP and the tests run against in-memory SQLite, so the mounted
 checkout works as it is; only the extensions differ. Nothing is written back into the
 repository, and `docker rmi ytsummarise-coverage` removes the image again.
+
+## TODO
+- add redis to manage queues, session
+- add horizon
+

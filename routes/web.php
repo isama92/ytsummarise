@@ -1,11 +1,45 @@
 <?php
 
+declare(strict_types=1);
+
 use App\Http\Controllers\Auth\AuthenticationController;
 use App\Http\Controllers\Auth\FirstUserController;
+use App\Http\Controllers\ManifestController;
+use App\Http\Controllers\SummaryController;
 use Illuminate\Support\Facades\Route;
 
+/*
+ * In neither group below, which is most of the point of it being up here.
+ *
+ * Behind `auth` the browser's own request for the manifest answers 302 to /login, and the
+ * application is quietly not installable with nothing to see in any log. Inside `guest`
+ * the same thing happens the other way round to anybody signed in. It says nothing about
+ * anybody, so it is reachable by everybody.
+ *
+ * Being outside both is necessary and not sufficient: AuthenticateAsFirstUser runs in the
+ * web group ahead of all of this and had to be told about it separately, or a self hosted
+ * install with authentication off and no user yet answered 302 here too.
+ */
+Route::get('manifest.webmanifest', ManifestController::class)->name('manifest');
+
 Route::middleware('auth')->group(function (): void {
-    Route::inertia('/', 'welcome')->name('home');
+    Route::get('/', [SummaryController::class, 'index'])->name('home');
+
+    /*
+     * Deliberately not throttled, unlike the POST below. The page polls this route every
+     * two seconds while a summary is being produced, which is thirty requests a minute:
+     * the same throttle:30,1 would start answering 429 partway through generating one.
+     */
+    Route::get('summaries/{summary}', [SummaryController::class, 'show'])->name('summaries.show');
+
+    /*
+     * Throttled even though it sits behind authentication: it queues work that will be a
+     * paid model call, so an accidental loop in the frontend should cost a 429 rather
+     * than a bill. Signed in people do not submit videos thirty times a minute.
+     */
+    Route::post('summaries', [SummaryController::class, 'store'])
+        ->middleware('throttle:30,1')
+        ->name('summaries.store');
 
     Route::post('logout', [AuthenticationController::class, 'destroy'])->name('logout');
 });

@@ -1,8 +1,11 @@
 import { Moon, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAppearance } from '@/hooks/use-appearance';
-import { cn } from '@/lib/utils';
 
+/**
+ * Positioning belongs to the caller. This used to place itself against the viewport,
+ * which meant it could never sit in a row alongside anything else.
+ */
 export default function AppearanceToggle({
     className = '',
 }: {
@@ -23,7 +26,7 @@ export default function AppearanceToggle({
                     : 'Switch to the dark theme'
             }
             data-test="appearance-toggle"
-            className={cn('fixed top-4 right-4', className)}
+            className={className}
         >
             {isDark ? <Moon className="size-5" /> : <Sun className="size-5" />}
         </Button>

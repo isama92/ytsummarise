@@ -28,7 +28,14 @@ class AuthenticateAsFirstUser
      */
     public function handle(Request $request, Closure $next): Response
     {
-        if (config('auth.enabled') || Auth::check() || $request->routeIs('first-user.*')) {
+        /*
+         * The manifest is exempt for the same reason it is in neither middleware group:
+         * the browser fetches it on its own and an installable application cannot depend
+         * on who is signed in. Without this it answered 302 on a fresh self hosted install
+         * - authentication off, users table still empty - and the application was silently
+         * not installable there. ManifestTest covers that state.
+         */
+        if (config('auth.enabled') || Auth::check() || $request->routeIs('first-user.*', 'manifest')) {
             return $next($request);
         }
 

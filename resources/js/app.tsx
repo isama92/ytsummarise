@@ -17,3 +17,16 @@ createInertiaApp({
 
 // This will set light / dark mode on load...
 initializeTheme();
+
+/*
+ * Production only, and not out of caution: a worker sitting in front of the Vite dev
+ * server intercepts its requests and breaks hot reloading. It also has nothing to do
+ * there, since the assets it caches only exist in a build.
+ *
+ * After load rather than immediately, so registering never competes with the first paint.
+ */
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        void navigator.serviceWorker.register('/sw.js');
+    });
+}
