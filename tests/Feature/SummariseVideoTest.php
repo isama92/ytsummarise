@@ -44,6 +44,8 @@ test('a video that does not exist is failed rather than summarised', function ()
     Sleep::fake();
     Log::spy();
 
+    withoutYouTubeKey();
+
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 404)]);
 
     $summary = Summary::factory()->pending()->create();
@@ -70,6 +72,8 @@ test('a video nobody could be asked about is failed as unreachable', function ()
     Sleep::fake();
     Log::spy();
 
+    withoutYouTubeKey();
+
     Saloon::fake([OembedRequest::class => youTubeUnreachable()]);
 
     $summary = Summary::factory()->pending()->create();
@@ -91,6 +95,8 @@ test('a video nobody could be asked about is failed as unreachable', function ()
  */
 test('a video the lookup will not name is still summarised', function (): void {
     Sleep::fake();
+
+    withoutYouTubeKey();
 
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 401)]);
 

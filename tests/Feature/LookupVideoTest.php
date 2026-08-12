@@ -8,7 +8,9 @@ use App\Services\YouTube\Enums\VideoPresence;
 use App\Services\YouTube\Requests\OembedRequest;
 use App\Services\YouTube\Requests\VideosRequest;
 use Illuminate\Support\Facades\Log;
+use Saloon\Exceptions\Request\FatalRequestException;
 use Saloon\Http\Faking\MockResponse;
+use Saloon\Http\PendingRequest;
 use Saloon\Http\Request;
 use Saloon\Http\Response;
 use Saloon\Laravel\Facades\Saloon;
@@ -36,8 +38,6 @@ function lookup(): LookupVideo
  * name of the video, and nothing else is asked.
  */
 test('the keyless endpoint names the video', function (): void {
-    config()->set('services.youtube.key', 'a-key-that-is-not-needed');
-
     Saloon::fake([
         OembedRequest::class => MockResponse::make(['title' => 'Never Gonna Give You Up']),
         VideosRequest::class => MockResponse::make(dataApiVideo('Should not be asked for')),
@@ -69,6 +69,8 @@ test('the video it asks about is the one it was given', function (): void {
 });
 
 test('a video that is not there is reported missing', function (int $status): void {
+    withoutYouTubeKey();
+
     Saloon::fake([OembedRequest::class => MockResponse::make(status: $status)]);
 
     expect(lookup()->execute('dQw4w9WgXcQ')->presence)->toBe(VideoPresence::Missing);
@@ -83,6 +85,8 @@ test('a video that is not there is reported missing', function (int $status): vo
  * summarising, so the only thing missing is the heading.
  */
 test('a video that will not be embedded is found without a title', function (int $status): void {
+    withoutYouTubeKey();
+
     Saloon::fake([OembedRequest::class => MockResponse::make(status: $status)]);
 
     $result = lookup()->execute('dQw4w9WgXcQ');
@@ -95,6 +99,8 @@ test('a video that will not be embedded is found without a title', function (int
 ]);
 
 test('an answer with no usable title is found without one', function (mixed $title): void {
+    withoutYouTubeKey();
+
     Saloon::fake([OembedRequest::class => MockResponse::make(['title' => $title])]);
 
     $result = lookup()->execute('dQw4w9WgXcQ');
@@ -108,6 +114,8 @@ test('an answer with no usable title is found without one', function (mixed $tit
 ]);
 
 test('a lookup nobody answers establishes nothing', function (): void {
+    withoutYouTubeKey();
+
     Saloon::fake([OembedRequest::class => youTubeUnreachable()]);
 
     expect(lookup()->execute('dQw4w9WgXcQ')->presence)->toBe(VideoPresence::Unknown);
@@ -115,6 +123,8 @@ test('a lookup nobody answers establishes nothing', function (): void {
 
 test('an answer that makes no sense establishes nothing', function (): void {
     Log::spy();
+
+    withoutYouTubeKey();
 
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 500)]);
 
@@ -124,11 +134,70 @@ test('an answer that makes no sense establishes nothing', function (): void {
 });
 
 /*
+ * A 2xx carrying something that is not json, which is what a captive portal or a proxy with
+ * opinions answers with. Saloon decodes with JSON_THROW_ON_ERROR, so without somewhere to catch
+ * this the JsonException leaves execute() altogether and the class stops keeping its promise that
+ * every fault comes back as Unknown.
+ */
+test('an answer that is not json at all establishes nothing', function (): void {
+    Log::spy();
+
+    withoutYouTubeKey();
+
+    Saloon::fake([OembedRequest::class => MockResponse::make('<html>Sign in to continue</html>')]);
+
+    expect(lookup()->execute('dQw4w9WgXcQ')->presence)->toBe(VideoPresence::Unknown);
+
+    Log::shouldHaveReceived('warning')->once();
+});
+
+/*
+ * The api key must never reach the log. A cURL failure's message ends with the whole request uri,
+ * and for the Data API that uri carries the key - Guzzle's own redaction only masks a password in
+ * user:pass@host and leaves the query alone, so nothing upstream of this protects it.
+ *
+ * The mock carries a real cURL message rather than a tidy one, because the format is the thing
+ * being handled.
+ */
+test('a failed lookup does not write the api key into the log', function (): void {
+    Log::spy();
+
+    $key = config()->string('services.youtube.key');
+
+    $curlMessage = 'cURL error 6: Could not resolve host: www.googleapis.com'
+        .' (see https://curl.se/libcurl/c/libcurl-errors.html)'
+        ." for https://www.googleapis.com/youtube/v3/videos?part=snippet&id=dQw4w9WgXcQ&key={$key}";
+
+    Saloon::fake([
+        OembedRequest::class => MockResponse::make(status: 404),
+        VideosRequest::class => MockResponse::make()->throw(
+            fn (PendingRequest $pendingRequest): FatalRequestException => new FatalRequestException(
+                new RuntimeException($curlMessage),
+                $pendingRequest,
+            ),
+        ),
+    ]);
+
+    expect(lookup()->execute('dQw4w9WgXcQ')->presence)->toBe(VideoPresence::Missing);
+
+    /*
+     * Asserted as "a warning was logged, and nothing in it carries the key", so a leak fails the
+     * expectation rather than merely being reported somewhere nobody reads.
+     */
+    Log::shouldHaveReceived('warning')
+        ->once()
+        ->withArgs(fn (string $message, array $context): bool => ! str_contains(
+            $message.' '.json_encode($context, JSON_THROW_ON_ERROR),
+            $key,
+        ));
+});
+
+/*
  * The second opinion, which only exists when somebody configured a key. Without one the
  * keyless answer stands, whatever it was, and no quota is spent finding out.
  */
 test('without a key there is nothing to ask twice', function (): void {
-    config()->set('services.youtube.key');
+    withoutYouTubeKey();
 
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 404)]);
 
@@ -138,16 +207,17 @@ test('without a key there is nothing to ask twice', function (): void {
 });
 
 /*
- * The same rule, checked where it now lives. `YOUTUBE_API_KEY=` reads back from an env file as an
- * empty string rather than as nothing, and config/services.php is what turns that into null, so
- * the action is entitled to treat any string it is given as a key somebody meant.
+ * The suite's own key, and the assertion that keeps it the suite's own. phpunit.xml pins a fake
+ * one so nothing here ever runs against a developer's real key, and pinning it takes both a
+ * <server> and a forced <env> entry: forced alone sets putenv and $_ENV but not $_SERVER, which
+ * phpdotenv reads first, so an exported key wins and the two-endpoint tests below start spending
+ * somebody's real quota.
  *
- * Deliberately not asserted against a particular environment value, which .ai/rules/config.md
- * warns off: a developer with a real key configured and CI with none both satisfy this, and both
- * would catch the config file going back to a bare env() call.
+ * Which is why this asserts the value rather than merely that a key exists: with the pin broken
+ * and a key exported, this is what fails, and it names the reason.
  */
-test('an empty key is no key at all', function (): void {
-    expect(config('services.youtube.key'))->not->toBe('');
+test('the suite runs against its own api key, whatever the developer has', function (): void {
+    expect(config('services.youtube.key'))->toBe('test-api-key');
 });
 
 /*
@@ -157,7 +227,7 @@ test('an empty key is no key at all', function (): void {
  * that and a refused key is a confusing hour for whoever reads the log.
  */
 test('an unconfigured connector sends no key at all', function (): void {
-    config()->set('services.youtube.key');
+    withoutYouTubeKey();
 
     Saloon::fake([VideosRequest::class => MockResponse::make(['items' => []])]);
 
@@ -170,8 +240,6 @@ test('an unconfigured connector sends no key at all', function (): void {
 });
 
 test('a key rescues a lookup the keyless endpoint could not answer', function (mixed $oembed): void {
-    config()->set('services.youtube.key', 'a-key');
-
     Saloon::fake([
         OembedRequest::class => $oembed,
         VideosRequest::class => MockResponse::make(dataApiVideo('Never Gonna Give You Up')),
@@ -182,10 +250,10 @@ test('a key rescues a lookup the keyless endpoint could not answer', function (m
     expect($result->presence)->toBe(VideoPresence::Found)
         ->and($result->title)->toBe('Never Gonna Give You Up');
 
-    /* And the key really goes out on the wire, rather than being read and dropped. */
+    /* And the configured key really goes out on the wire, rather than being read and dropped. */
     Saloon::assertSent(fn (Request $request, Response $response): bool => str_contains(
         (string) $response->getPendingRequest()->getUri(),
-        'key=a-key',
+        'key='.config('services.youtube.key'),
     ));
 })->with([
     'a video it said was missing' => fn () => MockResponse::make(status: 404),
@@ -195,8 +263,6 @@ test('a key rescues a lookup the keyless endpoint could not answer', function (m
 ]);
 
 test('a video neither endpoint has is missing', function (): void {
-    config()->set('services.youtube.key', 'a-key');
-
     Saloon::fake([
         OembedRequest::class => MockResponse::make(status: 404),
         VideosRequest::class => MockResponse::make(['items' => []]),
@@ -212,8 +278,6 @@ test('a video neither endpoint has is missing', function (): void {
  * watch.
  */
 test('a listing that omits a video does not unprove a video that answered', function (): void {
-    config()->set('services.youtube.key', 'a-key');
-
     Saloon::fake([
         OembedRequest::class => MockResponse::make(status: 401),
         VideosRequest::class => MockResponse::make(['items' => []]),
@@ -230,8 +294,6 @@ test('a listing that omits a video does not unprove a video that answered', func
  * such video is the only answer anybody has, and it is a definitive one.
  */
 test('a listing that omits a video settles it when nothing else could', function (): void {
-    config()->set('services.youtube.key', 'a-key');
-
     Saloon::fake([
         OembedRequest::class => youTubeUnreachable(),
         VideosRequest::class => MockResponse::make(['items' => []]),
@@ -242,8 +304,6 @@ test('a listing that omits a video settles it when nothing else could', function
 
 test('a refused or unusable second opinion establishes nothing', function (mixed $dataApi): void {
     Log::spy();
-
-    config()->set('services.youtube.key', 'a-key');
 
     Saloon::fake([
         OembedRequest::class => youTubeUnreachable(),

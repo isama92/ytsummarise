@@ -13,6 +13,8 @@ use App\Services\YouTube\Requests\VideosRequest;
 use App\Services\YouTube\Requests\YouTubeRequest;
 use App\Services\YouTube\YouTubeConnector;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use JsonException;
 use Saloon\Exceptions\Request\FatalRequestException;
 
 /**
@@ -82,8 +84,10 @@ class LookupVideo
      * One request, and its answer, or Unknown when there was no answer to have.
      *
      * A failed status code does not throw in Saloon, which is what lets each request read a 404
-     * or a 401 as an answer rather than an error. FatalRequestException is the other kind of
-     * failure: nothing came back at all, so there is no response for a request to read.
+     * or a 401 as an answer rather than an error. The two exceptions caught here are the failures
+     * that leave nothing for a request to read at all: nothing came back, or what came back was
+     * not json. Both are faults rather than answers, and this class promises to return them as
+     * Unknown rather than to throw.
      */
     private function send(YouTubeConnector $connector, YouTubeRequest $request): LookupResult
     {
@@ -91,6 +95,34 @@ class LookupVideo
             $result = $connector->send($request)->dto();
         } catch (FatalRequestException $exception) {
             Log::warning('Could not reach YouTube', [
+                'url' => $connector->resolveBaseUrl(),
+
+                /*
+                 * Everything from " for " onwards is thrown away, because that is where the
+                 * sender puts the url it was trying: a cURL failure reads "cURL error 6: Could
+                 * not resolve host: … (see …) for <the whole request uri>", and for the Data API
+                 * that uri carries the key. Guzzle looks like it handles this - the variable it
+                 * builds is called $redactedUriString - but its redaction only masks a password
+                 * in user:pass@host and leaves the query string alone.
+                 *
+                 * Nothing of diagnostic value is lost. The error itself is the part worth having,
+                 * and the host is recorded above without a query.
+                 */
+                'exception' => Str::before($exception->getMessage(), ' for '),
+            ]);
+
+            return LookupResult::unknown();
+        } catch (JsonException $exception) {
+            /*
+             * A 2xx carrying something that is not json at all, which is what a captive portal
+             * or an interpolating proxy answers with. Saloon decodes with JSON_THROW_ON_ERROR,
+             * so this arrives from inside the request's own reading of the response.
+             *
+             * Told apart from the case above because it is a different thing to go and look at:
+             * YouTube was reached and said something unusable, rather than never answering. The
+             * message is json_decode's own ("Syntax error") and carries no url.
+             */
+            Log::warning('YouTube answered with something that is not json', [
                 'url' => $connector->resolveBaseUrl(),
                 'exception' => $exception->getMessage(),
             ]);

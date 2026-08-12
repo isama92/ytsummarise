@@ -98,6 +98,20 @@ function fakeYouTube(string $title = 'Never Gonna Give You Up'): void
 }
 
 /**
+ * The application as it runs without a Data API key, which is a configuration it supports.
+ *
+ * phpunit.xml pins a fake key, so the suite exercises the fuller two-endpoint configuration by
+ * default and a test wanting the keyless path opts into it here. Null rather than an empty
+ * string: config/services.php is what turns an empty environment value into null, and setting
+ * the config directly goes around it, so an empty string here would read as a key somebody meant
+ * and the Data API would be asked with `key=` on the end.
+ */
+function withoutYouTubeKey(): void
+{
+    config()->set('services.youtube.key');
+}
+
+/**
  * A YouTube that never answers at all.
  *
  * Saloon's equivalent of a connection error, which is a thrown FatalRequestException rather than

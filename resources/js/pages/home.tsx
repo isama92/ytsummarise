@@ -130,15 +130,30 @@ function useJustFinished(
             READY_ANNOUNCED_FOR,
         );
 
-        return () => clearTimeout(timer);
+        /*
+         * The announcement is dropped along with its timer, and not only the timer. Cancelling
+         * the one without clearing the other left an announcement nothing was ever going to take
+         * down, and the way there is narrower than it looks, so it is written out: finish a
+         * video, ask for a second one inside the three seconds and have that one arrive pending
+         * (which moves the ref off the first), then ask for the first again. The cleanup has
+         * cancelled the timeout, the guard above returns early because the ref no longer matches,
+         * and announcing is still set to the video now on screen - "Ready" as the permanent label
+         * this hook exists to avoid. Reproduced in a browser, and fixed by the line below.
+         *
+         * Browser history is not that path: Inertia remounts the page component on a back
+         * navigation, so none of this state survives one.
+         */
+        return () => {
+            clearTimeout(timer);
+            setAnnouncing(null);
+        };
 
         /*
          * The ref is deliberately left set rather than cleared here, which keeps this whole
-         * effect repeatable: strict mode runs a mount effect, cleans it up and runs it again,
-         * and clearing it first would make that second pass fall out at the guard above with
-         * the timer already cancelled, leaving "Ready" up for good. Nothing is lost by leaving
-         * it - the effect only re-runs when the video or the status changes, and neither does
-         * again once a summary is finished.
+         * effect repeatable: strict mode runs a mount effect, cleans it up and runs it again, and
+         * clearing it would make that second pass fall out at the guard above having already
+         * dropped the announcement. Nothing is lost by leaving it - the effect only re-runs when
+         * the video or the status changes, and neither does again once a summary is finished.
          */
     }, [videoId, status]);
 
