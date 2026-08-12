@@ -306,6 +306,13 @@ test('a pending video is joined rather than restarted, however long it has been 
  * the claim outlives each of them.
  */
 test('a summary that failed holding a claim is really summarised when asked for again', function (string $route): void {
+    /*
+     * Faked because the request below really does dispatch, and the summaries connection is
+     * Redis - which the suite has no reachable one of, by design. What this test is about
+     * happens either side of that dispatch rather than in it: the controller clearing the
+     * claim, and handle() being able to take it.
+     */
+    Queue::fake();
     Log::spy();
     fakeSummarisableVideo();
 

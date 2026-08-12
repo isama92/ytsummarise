@@ -15,7 +15,7 @@ return [
     |
     */
 
-    'default' => env('CACHE_STORE', 'database'),
+    'default' => env('CACHE_STORE', 'redis'),
 
     /*
     |--------------------------------------------------------------------------
@@ -26,7 +26,10 @@ return [
     | well as their drivers. You may even define multiple stores for the
     | same cache driver to group types of items stored in your caches.
     |
-    | Supported drivers: "array", "database", "file", "storage", "null"
+    | Supported drivers: "array", "file", "redis", "storage", "null"
+    |
+    | No "database" store: the cache and cache_locks tables it wanted are gone, and a store
+    | pointing at a table that does not exist is a trap rather than a fallback.
     |
     */
 
@@ -37,12 +40,21 @@ return [
             'serialize' => false,
         ],
 
-        'database' => [
-            'driver' => 'database',
-            'connection' => env('DB_CACHE_CONNECTION'),
-            'table' => env('DB_CACHE_TABLE', 'cache'),
-            'lock_connection' => env('DB_CACHE_LOCK_CONNECTION'),
-            'lock_table' => env('DB_CACHE_LOCK_TABLE'),
+        /*
+         * On its own Redis database, away from the queue and the sessions, because clearing
+         * this store is a FLUSHDB rather than a DELETE. See config/database.php.
+         *
+         * lock_connection is left on `default` - Laravel's own default, and worth keeping
+         * rather than tidying onto the same database as the entries. Locks are what
+         * ShouldBeUnique is built from, and SummariseVideo uses it to stop one video being
+         * summarised twice at a cost per attempt. Because they are not in this store's
+         * database, `cache:clear` cannot release one; it flushes the cache connection and
+         * nothing else.
+         */
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_CACHE_CONNECTION', 'cache'),
+            'lock_connection' => env('REDIS_CACHE_LOCK_CONNECTION', 'default'),
         ],
 
         'file' => [

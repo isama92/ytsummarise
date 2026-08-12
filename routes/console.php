@@ -29,9 +29,9 @@ Artisan::command('inspire', function (): void {
  * No withoutOverlapping. An hour apart and a run of one indexed query means two of these can
  * hardly meet, and if they did the write-off re-checks its own conditions in the update, so
  * the worst of it is that one run reports what the other did. What a mutex would add is a way
- * to fail - it lives in the cache, which here is the database, so a run killed while holding
- * it wedges the backstop until it expires, and the default expiry is a day. A guard that
- * cannot plausibly be needed is not worth a failure mode that can.
+ * to fail - it lives in the cache, which here is Redis, so a run killed while holding it
+ * wedges the backstop until it expires, and the default expiry is a day. A guard that cannot
+ * plausibly be needed is not worth a failure mode that can.
  */
 Schedule::command(ExpireStalledSummaries::class)->hourly();
 
@@ -48,3 +48,16 @@ Schedule::command(ExpireStalledSummaries::class)->hourly();
  * a mutex in the cache is a way to wedge a backstop that cannot plausibly need one.
  */
 Schedule::command(PruneSummaries::class)->dailyAt('03:00');
+
+/*
+ * Every five minutes, which is the cadence Horizon's own graphs are drawn against.
+ *
+ * This is not housekeeping, it is the entire metrics dashboard. Horizon records throughput
+ * and wait times continuously but only writes a point when this runs, so without it the
+ * Metrics tab is permanently empty and running `php artisan horizon` does not hint at why.
+ *
+ * The cadence and horizon.metrics.trim_snapshots together decide how far back the graphs go:
+ * that option is a count of snapshots rather than an age, so 24 of them at five minutes apart
+ * is two hours of history. Changing one without the other quietly changes the window.
+ */
+Schedule::command('horizon:snapshot')->everyFiveMinutes();

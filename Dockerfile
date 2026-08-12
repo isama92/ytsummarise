@@ -38,6 +38,14 @@
 FROM dunglas/frankenphp:php8.5-bookworm AS build-base
 WORKDIR /app
 
+# Horizon lists ext-pcntl and ext-posix as hard requirements. The base image has posix and
+# not pcntl, which makes this a BUILD requirement rather than a runtime one: `composer
+# install` below verifies the lock file's platform requirements and stops with "requires
+# ext-pcntl * -> it is missing from your system" before a single package is written. So it
+# belongs here, in the stage both `vendor` and `assets` inherit, and separately in `prod`,
+# which is a different image and shares nothing with this one.
+RUN install-php-extensions pcntl
+
 
 # PHP dependencies. Split so the expensive `composer install` is keyed on the lock file
 # alone and survives ordinary source edits.
@@ -89,7 +97,14 @@ COPY --from=vendor /app /app
 # document title, so setting APP_NAME in the production .env changes the title Blade
 # renders but NOT the one the client sets after hydration. Change it in .env.example
 # and rebuild.
+#
+# The three driver overrides are what keep this stage buildable. .env.example puts the cache,
+# the session and the queue on Redis, and there is no Redis in a build - so anything booting
+# artisan here is one stray cache read away from a connection refused. Nothing in
+# key:generate or wayfinder:generate touches a store today; these say so rather than leaving
+# it to luck, and they never leave the stage either.
 RUN cp .env.example .env \
+    && printf '\nCACHE_STORE=array\nSESSION_DRIVER=array\nQUEUE_CONNECTION=sync\n' >> .env \
     && php artisan key:generate --no-interaction \
     && npm run build
 
@@ -99,7 +114,13 @@ FROM dunglas/frankenphp:php8.5-alpine AS prod
 # install-php-extensions (shipped in the base image) rather than docker-php-ext-install,
 # because it pulls the postgres headers for the build and leaves only the runtime
 # library behind.
-RUN install-php-extensions pdo_pgsql
+#
+# pcntl and posix are Horizon's, and posix is the only one of the three already present:
+# without pcntl the master supervisor cannot fork, and without redis there is no queue for
+# it to supervise. phpredis rather than predis/predis deliberately - it is what Horizon
+# recommends, and installing it per-stage keeps the libc-agnostic invariant above intact,
+# which a compiled composer package would not.
+RUN install-php-extensions pdo_pgsql pcntl redis
 
 # The image ships php.ini-development and php.ini-production but activates neither, so
 # PHP would run on built-in defaults - display_errors among them. Put the production one
