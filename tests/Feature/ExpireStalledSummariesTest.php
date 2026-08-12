@@ -102,14 +102,17 @@ test('a summary that finishes while being written off keeps its summary', functi
 });
 
 /*
- * The command only helps if something runs it.
+ * The command only helps if something runs it, and how often it runs is how long a page
+ * waiting on a job that vanished keeps waiting. Hourly means up to the timeout plus an
+ * hour, which is a deliberate trade against waking a process every minute forever;
+ * changing the cadence changes that, so it is pinned rather than left to a comment.
  */
-test('the command is scheduled', function (): void {
-    $commands = collect(app(Schedule::class)->events())
-        ->map(fn (object $event): string => (string) $event->command);
+test('the command is scheduled hourly', function (): void {
+    $events = collect(app(Schedule::class)->events())
+        ->filter(fn (object $event): bool => str_contains((string) $event->command, 'summaries:expire-stalled'));
 
-    expect($commands->filter(fn (string $command): bool => str_contains($command, 'summaries:expire-stalled')))
-        ->not->toBeEmpty();
+    expect($events)->toHaveCount(1)
+        ->and($events->first()->expression)->toBe('0 * * * *');
 });
 
 test('the expiry command has a signature that matches what is scheduled', function (): void {
