@@ -139,6 +139,7 @@ class AppServiceProvider extends ServiceProvider
      */
     protected function configureDevCommands(): void
     {
+        DevCommands::withTimestamps();
         DevCommands::artisan('horizon', 'queue');
     }
 
