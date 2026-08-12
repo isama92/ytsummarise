@@ -53,13 +53,13 @@ test('a second job for a video somebody is already working on does nothing', fun
 });
 
 /*
- * Two jobs for one row, which is the case worth pinning: only one of them may pay.
+ * Two jobs overlapping on one row, which is the case worth pinning: only one may pay.
  *
- * Nothing is carried between them and nothing can be. An earlier version of this test built
- * both jobs from one model instance, and the first handle() mutated that instance to ready in
- * memory, so the second returned at the status guard without ever reaching the claim - it
- * passed with the claim deleted outright, which is worse than no test. A job holds an id and
- * loads the row itself, so that mistake is no longer available to make.
+ * The overlap is the whole test and has to be arranged deliberately. Run one after the other,
+ * the row is already ready by the time the second loads it, so it stops at the status guard
+ * and never reaches the claim at all - which is how the previous two versions of this test
+ * both managed to pass with the claim deleted outright. Running the second inside the first's
+ * model call is the only arrangement where the claim is what answers.
  */
 test('the first of two jobs pays and the second does not', function (): void {
     Sleep::fake();
@@ -69,10 +69,28 @@ test('the first of two jobs pays and the second does not', function (): void {
     $first = new SummariseVideo($summary->id);
     $second = new SummariseVideo($summary->id);
 
+    /*
+     * Once, or a second job that got past the claim would sleep, re-enter here and recurse
+     * rather than failing. The guard costs nothing when the claim works, because the second
+     * job returns without sleeping and this never fires twice anyway.
+     */
+    $overlapped = false;
+
+    Sleep::whenFakingSleep(function () use ($second, &$overlapped): void {
+        if ($overlapped) {
+            return;
+        }
+
+        $overlapped = true;
+
+        $second->handle();
+    });
+
     $first->handle();
-    $second->handle();
 
     /* One sleep stands for one model call, so one summary was paid for. */
+    expect($overlapped)->toBeTrue();
+
     Sleep::assertSleptTimes(1);
 
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);

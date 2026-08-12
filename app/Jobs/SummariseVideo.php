@@ -144,6 +144,10 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * Failed covers the expiry command having given up on this attempt while the job sat
          * in the queue. Nothing is paid for a summary the page has already said did not work
          * and offered to try again; whoever asks again starts a fresh attempt.
+         *
+         * Only reachable before the work starts, which is the whole extent of what this
+         * guard buys. A job already past it when the command runs finishes and writes its
+         * summary regardless - see the stale scope on the model for what that costs.
          */
         if ($summary->status !== SummaryStatus::Pending) {
             return;

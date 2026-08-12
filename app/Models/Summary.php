@@ -106,10 +106,18 @@ class Summary extends Model
      * Summaries whose attempt has been pending long enough to give up on.
      *
      * The only set the expiry command works from, and deliberately blunt: it does not ask
-     * whether a worker ever picked the row up. A job queued behind a long enough backlog is
-     * in here while it is still perfectly alive, and will be written off and then stop at
-     * the status guard in the job when a worker finally reaches it. That is the cost of one
-     * horizon instead of two, and the horizon is sized so it is rare rather than impossible.
+     * whether a worker ever picked the row up. Anything alive and slow enough is in here,
+     * and the horizon is sized so that is rare rather than impossible.
+     *
+     * Being wrong about a job that has not started costs nothing: it meets the status guard
+     * in SummariseVideo when a worker finally reaches it and stops before paying.
+     *
+     * Being wrong about one already running is not free, and it is worth knowing rather than
+     * discovering. That job is past the guard and finishes anyway, which is the right
+     * outcome for the summary itself. The cost is the retry: resubmitting clears a claim a
+     * live worker is still holding, and a second job can then pay for the same video.
+     * Narrowing this to unclaimed rows would trade that for a row whose worker died never
+     * being written off at all, which is the second horizon this deliberately does without.
      *
      * @param  Builder<Summary>  $query
      */

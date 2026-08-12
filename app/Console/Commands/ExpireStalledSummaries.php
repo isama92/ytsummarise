@@ -60,7 +60,7 @@ class ExpireStalledSummaries extends Command
          * so the update can only ever narrow the set, never widen it.
          */
         $failed = $rows->clone()
-            ->whereKey($videoIds->keys())
+            ->whereIn('id', $videoIds->keys())
             ->update(['status' => SummaryStatus::Failed]);
 
         /*
@@ -81,8 +81,22 @@ class ExpireStalledSummaries extends Command
          */
         Log::warning('Failed summaries that had been pending too long', [
             'failed' => $failed,
-            'video_ids' => $videoIds->values()->take(self::VIDEO_IDS_LOGGED)->all(),
-            'video_ids_truncated' => $failed > self::VIDEO_IDS_LOGGED,
+
+            /*
+             * Candidates and not video_ids, because that is what they are: the rows this run
+             * selected, one or more of which may have finished before the update reached it
+             * and been deliberately left alone. Sitting under a key that reads as "the ones
+             * failed" is how a diagnosis starts from a video that was never touched.
+             */
+            'candidates' => $videoIds->values()->take(self::VIDEO_IDS_LOGGED)->all(),
+
+            /*
+             * Measured against what was selected rather than against what changed, since the
+             * list above is the selection. Taking it from $failed reported an untruncated
+             * list whenever enough candidates finished in between to bring the count under
+             * the cap, which is exactly the run where the missing ids matter.
+             */
+            'candidates_truncated' => $videoIds->count() > self::VIDEO_IDS_LOGGED,
         ]);
 
         $this->components->warn(sprintf(

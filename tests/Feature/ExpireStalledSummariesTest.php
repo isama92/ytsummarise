@@ -163,6 +163,47 @@ test('a summary that finishes while being written off keeps its summary', functi
 });
 
 /*
+ * What the log says a run did, on the one run where the two numbers disagree: more candidates
+ * than the line will carry, and enough of them finishing in between to bring the count of rows
+ * actually failed back under that cap.
+ *
+ * Both halves used to read from the wrong set. The list was called video_ids and sat beside
+ * "failed" as though it were the rows written off, when a row that finished is in it and was
+ * deliberately left alone. And the truncation flag was measured against the failed count, so a
+ * run like this one reported a complete list while silently dropping ids from it.
+ */
+test('the log distinguishes what was selected from what was failed', function (): void {
+    Log::spy();
+
+    $stale = Summary::factory()->stale()->count(25)->create();
+    $finishFirst = $stale->take(9)->modelKeys();
+    $raced = false;
+
+    DB::listen(function (QueryExecuted $query) use ($finishFirst, &$raced): void {
+        if ($raced || ! str_contains($query->sql, 'video_id')) {
+            return;
+        }
+
+        $raced = true;
+
+        Summary::query()->whereKey($finishFirst)->update([
+            'status' => SummaryStatus::Ready,
+            'body' => 'Arrived at the last moment.',
+        ]);
+    });
+
+    $this->artisan('summaries:expire')->assertSuccessful();
+
+    expect($raced)->toBeTrue();
+
+    Log::shouldHaveReceived('warning')
+        ->once()
+        ->withArgs(fn (string $message, array $context): bool => $context['failed'] === 16
+            && count($context['candidates']) === 20
+            && $context['candidates_truncated'] === true);
+});
+
+/*
  * The command only helps if something runs it, and how often it runs is how long a page
  * waiting on a dead job keeps waiting. Hourly means up to the horizon plus an hour, which is
  * a deliberate trade against waking a process every minute forever; changing the cadence
@@ -182,10 +223,34 @@ test('the command has a signature that matches what is scheduled', function (): 
 
 /*
  * Two horizons doing different jobs, and the reason they are separate values. How long the
- * work itself gets says nothing about how long an attempt may sit waiting for a worker, and
- * an attempt cannot be given up on sooner than the work is allowed to take.
+ * work itself gets says nothing about how long an attempt may sit waiting for a worker.
  */
-test('the horizon is longer than the time the work itself gets', function (): void {
+test('the horizon leaves room for the work and for waiting', function (): void {
     expect(config()->integer('summaries.stale_after'))
-        ->toBeGreaterThan(config()->integer('summaries.timeout'));
+        ->toBeGreaterThanOrEqual(config()->integer('summaries.timeout') * 2);
+});
+
+/*
+ * And it cannot be configured below that, which matters because the two clocks start at
+ * different moments: this one when the attempt was asked for, the worker's budget when the
+ * work began. Setting them equal expires the horizon while the work is still legally running
+ * for every row that waited in a queue at all, so the floor is twice the timeout rather than
+ * the timeout.
+ *
+ * The file is required again rather than read through config(), which was resolved at boot
+ * and would answer for the environment the suite runs in whatever these say.
+ */
+test('the horizon cannot be configured below the room it needs', function (): void {
+    putenv('SUMMARY_TIMEOUT=1800');
+    putenv('SUMMARY_STALE_AFTER=1800');
+
+    try {
+        $summaries = require base_path('config/summaries.php');
+
+        expect($summaries['timeout'])->toBe(1800)
+            ->and($summaries['stale_after'])->toBe(3600);
+    } finally {
+        putenv('SUMMARY_TIMEOUT');
+        putenv('SUMMARY_STALE_AFTER');
+    }
 });

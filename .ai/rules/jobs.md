@@ -17,10 +17,16 @@ ShouldBeUnique stops a duplicate being queued; it does not stop one being worked
 
 Where the work costs money or must not be repeated, open handle() with a conditional update that claims the row, and return if it affects nothing:
 
-    $claimed = Summary::query()->whereKey($this->summary->getKey())
-        ->whereNull('started_at')->update(['started_at' => Date::now()]);
+    $claimed = Summary::query()->whereKey($this->summaryId)
+        ->where('status', SummaryStatus::Pending)
+        ->whereNull('started_at')
+        ->update(['started_at' => Date::now()]);
 
     if ($claimed === 0) { return; }
+
+Every condition the job already checked goes in here as well, not just the claim itself. Reading the status and then claiming are two statements, and whatever writes rows off can land between them - claim on the strength of the earlier read and the job pays for work that has already been given up on.
+
+Carry the id rather than the model, too. A restored job re-queries it while a job built in process keeps whatever instance it was handed, and a test that builds two jobs from one instance is testing neither.
 
 Two consequences worth keeping: whatever resets the row for a retry must clear the claim too, or it is unclaimable forever and every later job returns having done nothing.
 
