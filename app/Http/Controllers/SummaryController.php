@@ -91,6 +91,13 @@ class SummaryController extends Controller
          * duplicate: the job is unique per video, so while one is in flight this is dropped
          * and the browser simply joins it. Should the lock have lapsed and two end up
          * queued, the claim in the job settles which one does the work.
+         *
+         * Asking again for a row that failed always reaches the queue, which is less obvious
+         * than it looks. A job that failed by throwing releases the lock on its way out. A
+         * job whose worker was killed releases nothing, but its lock runs from when it was
+         * dispatched while the row is only written off a whole timeout after the work
+         * started - and work starts no earlier than dispatch, so by the time anybody can see
+         * a failure to resubmit, the lock has already lapsed.
          */
         SummariseVideo::dispatch($summary);
 

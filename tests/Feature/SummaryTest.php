@@ -7,6 +7,7 @@ use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use App\Models\User;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Sleep;
 use Inertia\Testing\AssertableInertia;
@@ -206,19 +207,31 @@ test('resubmitting a video whose worker went missing starts a new attempt', func
 
 /*
  * The whole way round, because the claim is a return-early and a stale one would make a row
- * unworkable without saying so: abandoned by its worker, written off by the command, asked
- * for again, and actually summarised. If the reset ever stops clearing the claim, the job
- * below finds somebody else apparently working and returns having done nothing, and this is
- * what notices.
+ * unworkable without saying so: failed while holding a claim, asked for again, and actually
+ * summarised. If the reset ever stops clearing the claim, the job below finds somebody else
+ * apparently working and returns having done nothing, and this is what notices.
+ *
+ * Both routes to a failed row that still holds one, because they are reached differently and
+ * the claim outlives each of them.
  */
-test('a summary written off and asked for again is really summarised', function (): void {
+test('a summary that failed holding a claim is really summarised when asked for again', function (string $route): void {
     Sleep::fake();
+    Log::spy();
 
     $summary = Summary::factory()->stalled()->create(['video_id' => 'dQw4w9WgXcQ']);
 
-    $this->artisan('summaries:recover')->assertSuccessful();
+    match ($route) {
+        /* The command's write-off leaves the claim where it was: it only changes status. */
+        'command' => $this->artisan('summaries:recover')->assertSuccessful(),
+        /* And the job failing on its own is the same shape reached from the other side. */
+        'job' => (new SummariseVideo($summary))->failed(new RuntimeException('no transcript')),
+    };
 
-    expect($summary->fresh()?->status)->toBe(SummaryStatus::Failed);
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        /* The point of the exercise: it is failed and still claimed. */
+        ->and($summary->started_at)->not->toBeNull();
 
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
@@ -236,7 +249,10 @@ test('a summary written off and asked for again is really summarised', function 
     expect($summary->status)->toBe(SummaryStatus::Ready)
         ->and($summary->body)->not->toBeEmpty()
         ->and($summary->started_at)->not->toBeNull();
-});
+})->with([
+    'written off by the recovery command' => 'command',
+    'failed by the job itself' => 'job',
+]);
 
 test('a video somebody is already working on is joined rather than restarted', function (): void {
     Queue::fake();
