@@ -6,7 +6,9 @@ paths:
 # Jobs
 
 ## Use Illuminate\Support\Sleep, never sleep()
-phpunit.xml sets QUEUE_CONNECTION=sync, so every job runs inline inside the test that dispatched it. A literal sleep() therefore charges its seconds to the suite; Sleep::for(...)->seconds() behaves identically at runtime and disappears under Sleep::fake(), which also lets a test assert the duration with Sleep::assertSlept().
+A literal sleep() charges its seconds to the suite, whether the job runs inline or a test calls handle() directly. Sleep::for(...)->seconds() behaves identically at runtime and disappears under Sleep::fake(), which also lets a test assert the duration with Sleep::assertSlept().
+
+Whether a job runs inline under test depends on the job, not only on phpunit.xml. QUEUE_CONNECTION=sync makes that the default, but a job naming its own connection - SummariseVideo calls onConnection('summaries') for its retry_after - overrides it, so dispatching that one under test queues it rather than running it. Do not write a test that expects a dispatched job to have finished by the time the request comes back without checking which applies; call handle() directly, or fake the queue and assert what was pushed.
 
 Jobs here also implement ShouldBeUnique keyed on the thing being worked on, because the work will be a paid model call: firstOrCreate guards the row but two requests arriving together both find nothing and both dispatch. Always set $uniqueFor, or a worker killed mid job holds the lock forever.
 

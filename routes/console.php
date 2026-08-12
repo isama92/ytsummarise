@@ -18,9 +18,12 @@ Artisan::command('inspire', function (): void {
  *
  * What that costs is precision at the far end: a row a worker abandoned is written off
  * somewhere between the timeout and an hour after it, so a page waiting on one can sit there
- * that long before it says so. Affordable because it is not the only way out - submitting
- * the same video again recovers such a row immediately, without waiting for this. The
- * command is the path for the tab nobody is watching.
+ * that long before it says so.
+ *
+ * Resubmitting does not shorten that, which is worth being plain about. Until the timeout
+ * has passed the row does not count as abandoned, so a resubmit neither resets it nor gets a
+ * job through - the dispatch meets the lock, or the job meets the claim. The wait is real
+ * and this is what ends it, so the cadence is the whole answer rather than a fallback.
  *
  * No withoutOverlapping. An hour apart and a run of two indexed queries means two of these
  * can hardly meet, and if they did both halves are safe: the write-off is guarded on the

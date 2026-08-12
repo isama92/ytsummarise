@@ -49,21 +49,31 @@ test('a second job for a video somebody is already working on does nothing', fun
     Sleep::assertNeverSlept();
 });
 
-test('the first of two jobs wins and the second leaves it alone', function (): void {
+/*
+ * Two jobs handed the row as a worker would find it, which is the case worth pinning: two
+ * separate model instances, each loaded before either ran, exactly as two workers
+ * deserialising the same payload would have them.
+ *
+ * The first version of this test reused one instance for both calls. The first handle()
+ * mutated it to ready in memory, so the second returned at the already-ready guard and never
+ * reached the claim at all - it passed with the claim deleted outright, which makes it worse
+ * than no test.
+ */
+test('the first of two jobs pays and the second does not', function (): void {
     Sleep::fake();
 
     $summary = Summary::factory()->pending()->create();
 
-    (new SummariseVideo($summary))->handle();
+    $first = new SummariseVideo(Summary::query()->findOrFail($summary->getKey()));
+    $second = new SummariseVideo(Summary::query()->findOrFail($summary->getKey()));
 
-    $body = $summary->fresh()?->body;
+    $first->handle();
+    $second->handle();
 
-    (new SummariseVideo($summary))->handle();
-
-    expect($summary->fresh()?->body)->toBe($body);
-
-    /* One sleep, so one summary was paid for. */
+    /* One sleep stands for one model call, so one summary was paid for. */
     Sleep::assertSleptTimes(1);
+
+    expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
 });
 
 test('the job stands in for the latency of the model call', function (): void {

@@ -7,24 +7,29 @@ return [
     | Summary Timeout
     |--------------------------------------------------------------------------
     |
-    | How long a video gets to be summarised, in seconds. One value doing three
-    | jobs on purpose, so they can never disagree with each other:
+    | How long the work itself gets, in seconds. A budget for doing it, never
+    | for waiting to be started: a job sits in the queue behind every job ahead
+    | of it, and none of that time is counted here.
+    |
+    | One value doing three jobs on purpose, so they cannot disagree:
     |
     |   - the queue worker's timeout for SummariseVideo
-    |   - the lifetime of the lock that stops one video being summarised twice
-    |     at once, which is also what lets a second person asking for the same
+    |   - the lifetime of the lock that lets a second person asking for the same
     |     video join the job already running instead of starting another
-    |   - the age at which a summary still pending is written off as failed, so
-    |     a page waiting on a job that died stops waiting
+    |   - how long after a worker *started* a summary it is written off as
+    |     failed, so a page waiting on a worker that died stops waiting.
+    |     Measured from started_at, and only ever applied to a row some worker
+    |     claimed; one nobody has started yet is queued again instead, however
+    |     long it has been waiting.
     |
     | Nothing to keep in step by hand: the `summaries` connection in
     | config/queue.php derives its own retry_after from this value, because a
-    | retry_after below a job's timeout has the worker start a second copy of a
-    | job that is still running.
+    | retry_after below a job's timeout has the queue hand the job to a second
+    | worker while the first is still running.
     |
     | Floored at a minute rather than trusted blindly: a zero here, from an
-    | empty or unparseable value, would expire every summary the instant it was
-    | asked for and no summary would ever be produced again.
+    | empty or unparseable value, would write off every summary the instant a
+    | worker picked it up.
     |
     */
 

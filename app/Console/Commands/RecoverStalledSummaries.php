@@ -32,6 +32,11 @@ use Illuminate\Support\Facades\Log;
 class RecoverStalledSummaries extends Command
 {
     /**
+     * How many video ids a single log entry will carry.
+     */
+    private const int VIDEO_IDS_LOGGED = 20;
+
+    /**
      * Execute the console command.
      */
     public function handle(): void
@@ -53,16 +58,33 @@ class RecoverStalledSummaries extends Command
      */
     private function requeueUnstarted(): int
     {
-        $unstarted = Summary::query()->unclaimed()->get();
+        $dispatched = 0;
+        $videoIds = [];
 
-        if ($unstarted->isEmpty()) {
+        /*
+         * Streamed rather than fetched. The set is the queue's backlog, so it is normally a
+         * handful and occasionally everything submitted during an outage; loading all of it
+         * to dispatch one job at a time buys nothing and has no ceiling.
+         */
+        foreach (Summary::query()->unclaimed()->cursor() as $summary) {
+            SummariseVideo::dispatch($summary);
+
+            $dispatched++;
+
+            /* Enough to diagnose with, without putting an outage's worth in one line. */
+            if (count($videoIds) < self::VIDEO_IDS_LOGGED) {
+                $videoIds[] = $summary->video_id;
+            }
+        }
+
+        if ($dispatched === 0) {
             return 0;
         }
 
-        $unstarted->each(fn (Summary $summary): mixed => SummariseVideo::dispatch($summary));
-
         Log::debug('Dispatched summaries again that no worker had started', [
-            'video_ids' => $unstarted->pluck('video_id')->all(),
+            'dispatched' => $dispatched,
+            'video_ids' => $videoIds,
+            'video_ids_truncated' => $dispatched > self::VIDEO_IDS_LOGGED,
         ]);
 
         /*
@@ -71,11 +93,11 @@ class RecoverStalledSummaries extends Command
          */
         $this->components->info(sprintf(
             'Dispatched a job for %d unstarted %s.',
-            $unstarted->count(),
-            str('summary')->plural($unstarted->count()),
+            $dispatched,
+            str('summary')->plural($dispatched),
         ));
 
-        return $unstarted->count();
+        return $dispatched;
     }
 
     /**

@@ -134,6 +134,17 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
             ->update(['started_at' => Date::now()]);
 
         if ($claimed === 0) {
+            /*
+             * Ordinary - a duplicate dispatch bouncing off a live claim is the mechanism
+             * working - so debug rather than a warning. It is here at all because this
+             * return is otherwise indistinguishable from success in a worker log, and a row
+             * left holding a stale claim would look exactly the same while never being
+             * summarised at all.
+             */
+            Log::debug('Left a video to whoever claimed it', [
+                'video_id' => $this->summary->video_id,
+            ]);
+
             return;
         }
 
