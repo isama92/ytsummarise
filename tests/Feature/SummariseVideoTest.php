@@ -6,7 +6,10 @@ use App\Enums\SummaryStatus;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use Carbon\CarbonInterval;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 
@@ -15,7 +18,7 @@ test('the job writes a summary and marks it ready', function (): void {
 
     $summary = Summary::factory()->pending()->create();
 
-    (new SummariseVideo($summary))->handle();
+    (new SummariseVideo($summary->id))->handle();
 
     $summary->refresh();
 
@@ -37,7 +40,7 @@ test('a second job for a video somebody is already working on does nothing', fun
     $claimedAt = Date::now()->subMinute();
     $summary = Summary::factory()->processing()->create(['started_at' => $claimedAt]);
 
-    (new SummariseVideo($summary))->handle();
+    (new SummariseVideo($summary->id))->handle();
 
     $summary->refresh();
 
@@ -50,22 +53,21 @@ test('a second job for a video somebody is already working on does nothing', fun
 });
 
 /*
- * Two jobs handed the row as a worker would find it, which is the case worth pinning: two
- * separate model instances, each loaded before either ran, exactly as two workers
- * deserialising the same payload would have them.
+ * Two jobs for one row, which is the case worth pinning: only one of them may pay.
  *
- * The first version of this test reused one instance for both calls. The first handle()
- * mutated it to ready in memory, so the second returned at the already-ready guard and never
- * reached the claim at all - it passed with the claim deleted outright, which makes it worse
- * than no test.
+ * Nothing is carried between them and nothing can be. An earlier version of this test built
+ * both jobs from one model instance, and the first handle() mutated that instance to ready in
+ * memory, so the second returned at the status guard without ever reaching the claim - it
+ * passed with the claim deleted outright, which is worse than no test. A job holds an id and
+ * loads the row itself, so that mistake is no longer available to make.
  */
 test('the first of two jobs pays and the second does not', function (): void {
     Sleep::fake();
 
     $summary = Summary::factory()->pending()->create();
 
-    $first = new SummariseVideo(Summary::query()->findOrFail($summary->getKey()));
-    $second = new SummariseVideo(Summary::query()->findOrFail($summary->getKey()));
+    $first = new SummariseVideo($summary->id);
+    $second = new SummariseVideo($summary->id);
 
     $first->handle();
     $second->handle();
@@ -89,7 +91,7 @@ test('a job whose attempt was given up on does nothing', function (): void {
     /* As summaries:expire leaves a row nothing ever started: failed, and never claimed. */
     $summary = Summary::factory()->failed()->create(['started_at' => null]);
 
-    (new SummariseVideo($summary->fresh()))->handle();
+    (new SummariseVideo($summary->id))->handle();
 
     $summary->refresh();
 
@@ -101,10 +103,50 @@ test('a job whose attempt was given up on does nothing', function (): void {
     Sleep::assertNeverSlept();
 });
 
+/*
+ * The window between reading the status and claiming the row, which is why the claim checks
+ * the status again rather than trusting the read. summaries:expire can write the attempt off
+ * in between, and claiming it then pays for a summary the page has already offered to retry.
+ */
+test('a job whose attempt is given up on while it reads the row does not claim it', function (): void {
+    Sleep::fake();
+
+    $summary = Summary::factory()->pending()->create();
+    $raced = false;
+
+    /*
+     * Write the attempt off the moment the job has read it. The event fires once the rows
+     * have been fetched, so a listener on the job's only select over this table lands the
+     * change between that read and the claim.
+     */
+    DB::listen(function (QueryExecuted $query) use ($summary, &$raced): void {
+        if ($raced || ! str_contains($query->sql, 'select')) {
+            return;
+        }
+
+        $raced = true;
+
+        Summary::query()->whereKey($summary->getKey())->update([
+            'status' => SummaryStatus::Failed,
+        ]);
+    });
+
+    (new SummariseVideo($summary->id))->handle();
+
+    $summary->refresh();
+
+    expect($raced)->toBeTrue()
+        ->and($summary->status)->toBe(SummaryStatus::Failed)
+        /* Not claimed on the way past, which would make the retry unworkable. */
+        ->and($summary->started_at)->toBeNull();
+
+    Sleep::assertNeverSlept();
+});
+
 test('the job stands in for the latency of the model call', function (): void {
     Sleep::fake();
 
-    (new SummariseVideo(Summary::factory()->pending()->create()))->handle();
+    (new SummariseVideo(Summary::factory()->pending()->create()->id))->handle();
 
     Sleep::assertSlept(
         fn (CarbonInterval $duration): bool => (int) $duration->totalSeconds === 3,
@@ -116,7 +158,7 @@ test('a job that gives up records the failure, so the page stops waiting', funct
 
     $summary = Summary::factory()->pending()->create();
 
-    (new SummariseVideo($summary))->failed(new RuntimeException('no transcript'));
+    (new SummariseVideo($summary->id))->failed(new RuntimeException('no transcript'));
 
     $summary->refresh();
 
@@ -136,7 +178,7 @@ test('a late failure does not throw away a summary that already finished', funct
 
     $summary = Summary::factory()->create(['body' => 'The finished summary.']);
 
-    (new SummariseVideo($summary))->failed(new RuntimeException('worker died after writing'));
+    (new SummariseVideo($summary->id))->failed(new RuntimeException('worker died after writing'));
 
     $summary->refresh();
 
@@ -153,7 +195,7 @@ test('a late failure does not throw away a summary that already finished', funct
  * exists to prevent.
  */
 test('the queue cannot reserve the job again while it is still running', function (): void {
-    $job = new SummariseVideo(Summary::factory()->pending()->create());
+    $job = new SummariseVideo(Summary::factory()->pending()->create()->id);
     $timeout = config()->integer('summaries.timeout');
 
     expect($job->timeout)->toBe($timeout)
@@ -175,7 +217,7 @@ test('the queue cannot reserve the job again while it is still running', functio
  * same video.
  */
 test('the uniqueness lock lasts exactly as long as the one attempt it guards', function (): void {
-    $job = new SummariseVideo(Summary::factory()->pending()->create());
+    $job = new SummariseVideo(Summary::factory()->pending()->create()->id);
 
     expect($job->tries)->toBe(1)
         ->and($job->uniqueFor)->toBe($job->timeout)
@@ -192,15 +234,22 @@ test('a job delivered twice does not summarise twice', function (): void {
 
     $summary = Summary::factory()->create(['body' => 'The finished summary.']);
 
-    (new SummariseVideo($summary))->handle();
+    (new SummariseVideo($summary->id))->handle();
 
     expect($summary->fresh()?->body)->toBe('The finished summary.');
 
     Sleep::assertNeverSlept();
 });
 
+/*
+ * Keyed on the row rather than on the video code, which is only safe because they are the
+ * same key under two names. The second half of this is what makes the first half true, so it
+ * is asserted rather than trusted: lose the unique index on video_id and a video can have two
+ * rows, two ids, and two jobs paying for it at once.
+ */
 test('one job is in flight per video, not per request', function (): void {
     $summary = Summary::factory()->create(['video_id' => 'dQw4w9WgXcQ']);
 
-    expect((new SummariseVideo($summary))->uniqueId())->toBe('dQw4w9WgXcQ');
+    expect((new SummariseVideo($summary->id))->uniqueId())->toBe((string) $summary->id)
+        ->and(fn (): Summary => Summary::factory()->create(['video_id' => 'dQw4w9WgXcQ']))->toThrow(QueryException::class);
 });

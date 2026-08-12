@@ -109,7 +109,7 @@ class SummaryController extends Controller
          * the uniqueness lock drops the second before it reaches the queue.
          */
         if ($startsAttempt) {
-            SummariseVideo::dispatch($summary);
+            SummariseVideo::dispatch($summary->id);
         }
 
         return redirect()->route('summaries.show', $summary);

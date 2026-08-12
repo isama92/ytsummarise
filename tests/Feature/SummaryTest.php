@@ -115,11 +115,18 @@ test('the video is titled before the job is queued', function (): void {
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
 
-    expect(Summary::query()->sole()->title)->not->toBeNull();
+    $summary = Summary::query()->sole();
 
+    expect($summary->title)->not->toBeNull();
+
+    /*
+     * The job carries an id and loads the row when it runs, so what it is handed cannot be
+     * asserted from the payload any more - only that it is queued for this row. What matters
+     * either way is above: the title is on the row before the request comes back, which is
+     * what the page needs to have a heading for the whole wait.
+     */
     Queue::assertPushed(SummariseVideo::class,
-        /* The job is handed a row that already knows what the video is called. */
-        fn (SummariseVideo $job): bool => $job->summary->title !== null);
+        fn (SummariseVideo $job): bool => $job->summaryId === $summary->id);
 });
 
 test('a title already known is not looked up again', function (): void {
@@ -229,7 +236,7 @@ test('a summary that failed holding a claim is really summarised when asked for 
         /* The command's write-off leaves the claim where it was: it only changes status. */
         'command' => $this->artisan('summaries:expire')->assertSuccessful(),
         /* And the job failing on its own is the same shape reached from the other side. */
-        'job' => (new SummariseVideo($summary))->failed(new RuntimeException('no transcript')),
+        'job' => (new SummariseVideo($summary->id))->failed(new RuntimeException('no transcript')),
     };
 
     $summary->refresh();
@@ -247,7 +254,7 @@ test('a summary that failed holding a claim is really summarised when asked for 
      * sync default phpunit.xml sets, so dispatching it under test queues it rather than
      * running it. What matters here is that handle() can claim the row it was given.
      */
-    (new SummariseVideo($summary->fresh()))->handle();
+    (new SummariseVideo($summary->id))->handle();
 
     $summary->refresh();
 
