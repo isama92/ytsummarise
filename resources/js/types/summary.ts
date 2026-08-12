@@ -24,4 +24,12 @@ export type Summary = {
      * counts up from the moment the person before them asked, not from zero.
      */
     requestedAt: string;
+
+    /**
+     * ISO 8601, when a worker began, or null while it is still waiting its turn.
+     *
+     * The difference between queued and being worked on, which `status` cannot express:
+     * both are pending.
+     */
+    startedAt: string | null;
 };

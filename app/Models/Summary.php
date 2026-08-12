@@ -30,8 +30,9 @@ use Override;
  * @property string|null $title
  * @property string|null $body
  * @property CarbonImmutable $requested_at
+ * @property CarbonImmutable|null $started_at
  */
-#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at'])]
+#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at', 'started_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -76,46 +77,54 @@ class Summary extends Model
         return [
             'status' => SummaryStatus::class,
             'requested_at' => 'immutable_datetime',
+            'started_at' => 'immutable_datetime',
         ];
     }
 
     /**
-     * The moment before which a summary still pending has been waiting too long.
+     * The moment before which an attempt still pending has been pending too long.
+     *
+     * Compared against requested_at, which is set every time an attempt starts, so this
+     * measures the attempt in flight rather than the age of the row: a video summarised
+     * yesterday and asked for again a minute ago has a minute on the clock, not a day.
+     *
+     * A liveness horizon and not a budget for the work. What the work itself gets is
+     * summaries.timeout, which the worker enforces; this only asks whether anything is
+     * still going to happen, and it is generous because being wrong costs somebody a
+     * summary they have to ask for twice.
      *
      * CarbonInterface rather than CarbonImmutable because the concrete class is whatever
      * Date::use() was given in AppServiceProvider, and the facade is typed for the
      * mutable one.
      */
-    public static function stalledBefore(): CarbonInterface
+    public static function staleBefore(): CarbonInterface
     {
-        return Date::now()->subSeconds(config()->integer('summaries.timeout'));
+        return Date::now()->subSeconds(config()->integer('summaries.stale_after'));
     }
 
     /**
-     * Summaries that have been pending longer than a video is given.
+     * Summaries whose attempt has been pending long enough to give up on.
      *
-     * The job may have been killed, never reserved, or lost with the queue it sat in;
-     * from here they look the same and all end up written off the same way.
+     * The only set the expiry command works from, and deliberately blunt: it does not ask
+     * whether a worker ever picked the row up. Anything alive and slow enough is in here,
+     * and the horizon is sized so that is rare rather than impossible.
+     *
+     * Being wrong about a job that has not started costs nothing: it meets the status guard
+     * in SummariseVideo when a worker finally reaches it and stops before paying.
+     *
+     * Being wrong about one already running is not free, and it is worth knowing rather than
+     * discovering. That job is past the guard and finishes anyway, which is the right
+     * outcome for the summary itself. The cost is the retry: resubmitting clears a claim a
+     * live worker is still holding, and a second job can then pay for the same video.
+     * Narrowing this to unclaimed rows would trade that for a row whose worker died never
+     * being written off at all, which is the second horizon this deliberately does without.
      *
      * @param  Builder<Summary>  $query
      */
     #[Scope]
-    protected function stalled(Builder $query): void
+    protected function stale(Builder $query): void
     {
         $query->where('status', SummaryStatus::Pending)
-            ->where('requested_at', '<=', self::stalledBefore());
-    }
-
-    /**
-     * Whether this row in particular has been waiting too long.
-     *
-     * Shares its horizon with the scope above on purpose: the controller has to agree
-     * with the expiry command about what stalled means, or one of them starts a new
-     * attempt that the other writes off a minute later.
-     */
-    public function isStalled(): bool
-    {
-        return $this->status === SummaryStatus::Pending
-            && $this->requested_at <= self::stalledBefore();
+            ->where('requested_at', '<=', self::staleBefore());
     }
 }

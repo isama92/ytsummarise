@@ -23,3 +23,10 @@ vite.config.ts configures the wayfinder plugin with formVariants: true, so anyth
 Regenerate by hand with `php artisan wayfinder:generate --with-form`, or just let vite do it.
 
 (resources/js/actions, resources/js/routes and resources/js/wayfinder are all gitignored and generated, which is why this rule is filed here rather than against those paths: a glob over them could never match a file anyone is working on.)
+
+## Triage a review before fixing any of it
+When a code review comes back, do not start fixing. Verify the findings, then give an overview first: what is real, what is severe, what is mine, what is disputed, and what needs a decision rather than a patch. Then wait.
+
+The reasons are the point of the rule. A finding that reverses an earlier decision is the user's call, not a patch. A finding that looks small can turn out to be the design (and vice versa), and a batch of fixes already applied is harder to argue with than a list. And the triage itself is the useful artefact - it says which findings were checked and found wrong, which no diff records.
+
+Verifying first is not optional: reviews assert things that are stale, or true only under conditions that do not hold here. Check before repeating a claim, and say plainly which ones were checked.

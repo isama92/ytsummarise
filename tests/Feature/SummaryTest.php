@@ -7,7 +7,9 @@ use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use App\Models\User;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Sleep;
 use Inertia\Testing\AssertableInertia;
 
 /*
@@ -113,11 +115,18 @@ test('the video is titled before the job is queued', function (): void {
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
 
-    expect(Summary::query()->sole()->title)->not->toBeNull();
+    $summary = Summary::query()->sole();
 
+    expect($summary->title)->not->toBeNull();
+
+    /*
+     * The job carries an id and loads the row when it runs, so what it is handed cannot be
+     * asserted from the payload any more - only that it is queued for this row. What matters
+     * either way is above: the title is on the row before the request comes back, which is
+     * what the page needs to have a heading for the whole wait.
+     */
     Queue::assertPushed(SummariseVideo::class,
-        /* The job is handed a row that already knows what the video is called. */
-        fn (SummariseVideo $job): bool => $job->summary->title !== null);
+        fn (SummariseVideo $job): bool => $job->summaryId === $summary->id);
 });
 
 test('a title already known is not looked up again', function (): void {
@@ -168,29 +177,110 @@ test('a video with no title still has a summary', function (): void {
 });
 
 /*
- * The other half of joining a job already running: once the row has been pending longer
- * than a video is given, the job it was waiting on is gone, so this really is a new
- * attempt and its clock has to start again. Leaving the old requested_at in place had the
- * expiry command write the new attempt off within the minute.
+ * A pending row is joined and never restarted, however old it is. Restarting its clock would
+ * mislead whoever is already waiting on it, and a second job for it would be a second paid
+ * summary of one video. Nothing here is the controller's to judge: while the row says pending
+ * the attempt is somebody's to finish, and when it is not, summaries:expire says so and this
+ * becomes a retry.
  */
-test('resubmitting a video that has been pending too long starts a new attempt', function (): void {
+test('a pending video is joined rather than restarted, however long it has been pending', function (string $age): void {
     Queue::fake();
 
-    $summary = Summary::factory()->stalled()->create(['video_id' => 'dQw4w9WgXcQ']);
-    $abandonedAt = $summary->requested_at;
+    $askedAt = Date::now()->sub($age);
+
+    $summary = Summary::factory()->pending()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'requested_at' => $askedAt,
+    ]);
 
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
         ->assertRedirect(route('summaries.show', $summary));
 
-    Queue::assertPushed(SummariseVideo::class);
+    /* Not a second job for a video somebody is already summarising. */
+    Queue::assertNothingPushed();
 
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Pending)
-        ->and($summary->requested_at->greaterThan($abandonedAt))->toBeTrue()
-        /* And it is no longer a candidate for the command that would have killed it. */
-        ->and(Summary::query()->stalled()->count())->toBe(0);
+        ->and($summary->requested_at->timestamp)->toBe($askedAt->timestamp)
+        ->and($summary->started_at)->toBeNull();
+})->with([
+    'asked for four minutes ago' => '4 minutes',
+    /* Past the time the work itself gets, which says nothing about how long it may wait. */
+    'asked for longer than the work gets' => '31 minutes',
+    /* And past the horizon, which is the expiry command's business rather than this one's. */
+    'asked for longer than the horizon' => '7 hours',
+]);
+
+/*
+ * The whole way round, because the claim is a return-early and a stale one would make a row
+ * unworkable without saying so: failed while holding a claim, asked for again, and actually
+ * summarised. If the reset ever stops clearing the claim, the job below finds somebody else
+ * apparently working and returns having done nothing, and this is what notices.
+ *
+ * Both routes to a failed row that still holds one, because they are reached differently and
+ * the claim outlives each of them.
+ */
+test('a summary that failed holding a claim is really summarised when asked for again', function (string $route): void {
+    Sleep::fake();
+    Log::spy();
+
+    $summary = Summary::factory()->stale()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        /* Claimed by a worker that then went missing, so the row is stale and holds one. */
+        'started_at' => Date::now()->subMinutes(5),
+    ]);
+
+    match ($route) {
+        /* The command's write-off leaves the claim where it was: it only changes status. */
+        'command' => $this->artisan('summaries:expire')->assertSuccessful(),
+        /* And the job failing on its own is the same shape reached from the other side. */
+        'job' => (new SummariseVideo($summary->id))->failed(new RuntimeException('no transcript')),
+    };
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        /* The point of the exercise: it is failed and still claimed. */
+        ->and($summary->started_at)->not->toBeNull();
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    /*
+     * Run by hand rather than inline. The job names its own connection, which overrides the
+     * sync default phpunit.xml sets, so dispatching it under test queues it rather than
+     * running it. What matters here is that handle() can claim the row it was given.
+     */
+    (new SummariseVideo($summary->id))->handle();
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Ready)
+        ->and($summary->body)->not->toBeEmpty()
+        ->and($summary->started_at)->not->toBeNull();
+})->with([
+    'written off by the expiry command' => 'command',
+    'failed by the job itself' => 'job',
+]);
+
+test('a video somebody is already working on is joined rather than restarted', function (): void {
+    Queue::fake();
+
+    $claimedAt = Date::now()->subMinutes(2);
+    $summary = Summary::factory()->processing()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'started_at' => $claimedAt,
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    /* Untouched: the work is under way and this request is simply watching it. */
+    expect($summary->fresh()?->started_at?->timestamp)->toBe($claimedAt->timestamp);
 });
 
 test('a brand new submission starts its clock straight away', function (): void {
@@ -279,6 +369,29 @@ test('the page is told when the summary was asked for', function (): void {
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
             ->component('home')
             ->where('summary.requestedAt', $summary->requested_at->toIso8601String()),
+        );
+});
+
+/*
+ * Queued and processing are the same status on this side, so whether a worker has started is
+ * the only thing that tells them apart, and the page needs it to say which.
+ */
+test('the page is told whether a worker has started', function (): void {
+    $waiting = Summary::factory()->pending()->create();
+    $working = Summary::factory()->processing()->create();
+
+    $user = User::factory()->create();
+
+    $this->actingAs($user)
+        ->get(route('summaries.show', $waiting))
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->where('summary.startedAt', null),
+        );
+
+    $this->actingAs($user)
+        ->get(route('summaries.show', $working))
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->where('summary.startedAt', $working->started_at?->toIso8601String()),
         );
 });
 
