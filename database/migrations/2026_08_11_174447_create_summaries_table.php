@@ -55,8 +55,9 @@ return new class extends Migration
              * retry after the second kind of failure re-runs only the model, offline, over
              * exactly the text the first attempt saw.
              *
-             * Other people's words, so it is worth saying out loud that this is the column
-             * with a retention question attached. Nothing prunes it today.
+             * Other people's words, which is why this is the column with a retention window
+             * attached: summaries:prune deletes the row, and this with it, once nobody has
+             * asked for the video in summaries.retention_days.
              *
              * Null for every attempt that failed before reaching one, which includes every
              * video that has no captions at all.

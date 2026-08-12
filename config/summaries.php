@@ -21,7 +21,7 @@ $transcriptTimeout = max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120));
  */
 $steps = (2 * $transcriptTimeout) + (3 * $modelTimeout) + 60;
 
-$timeout = max($steps, max(60, (int) env('SUMMARY_TIMEOUT', 1800)));
+$timeout = max($steps, max(60, (int) env('SUMMARY_TIMEOUT', 3600)));
 
 return [
 
@@ -163,7 +163,11 @@ return [
     |--------------------------------------------------------------------------
     |
     | How many days a summary is kept before summaries:prune deletes it, counted
-    | from when the row was created.
+    | from requested_at - when it was last asked for, rather than when the row
+    | was first created. So the window is "nobody has asked for this in a week"
+    | rather than "this is a week old", and a video somebody comes back to keeps
+    | earning its place. Retries renew it for the same reason, since asking again
+    | is asking.
     |
     | This exists because of what is stored beside the summary rather than
     | because of the summary. A transcript is a recording of somebody speaking,
@@ -172,16 +176,16 @@ return [
     | storage limitation the AVG is about, so the window is short by default and
     | the deletion runs whether or not anybody remembers to ask for it.
     |
-    | Deliberately not switchable off. A value of zero would be the setting
-    | everybody reaches for the first time a summary they wanted disappears, and
-    | it is the one setting that turns a retention policy into a note in a
-    | README. A week is floored to a day rather than to nothing.
+    | Zero switches it off and keeps everything indefinitely. Worth being plain
+    | about what that means rather than hiding it behind a floor: it is a
+    | decision to hold other people's speech with no end date, which needs a
+    | reason that is not "the setting was there".
     |
     | Deleting a summary is not destructive in the way it sounds: asking for the
     | same video again produces a new one. What it costs is the time to make it.
     |
     */
 
-    'retention_days' => max(1, (int) env('SUMMARY_RETENTION_DAYS', 7)),
+    'retention_days' => max(0, (int) env('SUMMARY_RETENTION_DAYS', 7)),
 
 ];

@@ -74,7 +74,7 @@ return [
                 (2 * max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120)))
                     + (3 * max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600)))
                     + 60,
-                max(60, (int) env('SUMMARY_TIMEOUT', 1800)),
+                max(60, (int) env('SUMMARY_TIMEOUT', 3600)),
             ) + 60,
             'after_commit' => false,
         ],

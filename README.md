@@ -102,12 +102,17 @@ SUMMARY_RETENTION_DAYS=7
 `summaries:prune` does it, scheduled daily at 03:00, and it is not a maintenance convenience.
 A transcript is a recording of somebody speaking, written down and kept by us, and nobody
 asked them; keeping it indefinitely because deleting it was never anybody's job is the
-storage limitation the AVG is about. So the window is short by default, it runs on a
-schedule rather than waiting to be remembered, and it cannot be switched off — a value of
-zero is floored to one day.
+storage limitation the AVG is about. So the window is short by default and it runs on a
+schedule rather than waiting to be remembered.
 
-Deleting a summary is less destructive than it sounds. Asking for the same video again
-produces a new one; what it costs is the time to make it.
+The window is measured from when a video was **last asked for**, not from when its row was
+created — so it deletes what nobody has wanted in a week, and asking for a video again
+renews it. Deleting a summary is less destructive than it sounds: asking for the same video
+again produces a new one, at the cost of making it again.
+
+`SUMMARY_RETENTION_DAYS=0` switches it off and keeps everything. The command says so on
+every run rather than silently deleting nothing, since a nightly job that removes nothing
+looks identical to one that is working.
 
 Transcripts are stored, so you can measure your own corpus rather than trusting the table:
 

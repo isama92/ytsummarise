@@ -20,11 +20,12 @@ use Illuminate\Support\Facades\Log;
  * deleting it was anybody's job is exactly the storage limitation the AVG is about, so this
  * runs on a schedule rather than waiting to be remembered.
  *
- * Measured from created_at, which is when the video was first asked for, and not from
- * requested_at - that resets on every retry, so a video somebody keeps failing to summarise
- * would keep renewing its own retention. The age of the row is the honest question here.
+ * Measured from requested_at, which is when the video was last asked for rather than when the
+ * row was first created. So this deletes what nobody has asked for in a week, and a video
+ * people keep coming back to keeps earning its place. Retries renew it, which follows from the
+ * same idea: asking again is asking.
  *
- * Deletes rather than nulling the transcript. A summary of a video nobody has looked at for a
+ * Deletes rather than nulling the transcript. A summary of a video nobody has asked for in a
  * week is not worth keeping either, the row is cheap to recreate, and half-emptied rows would
  * be a third state for everything downstream to understand.
  *
@@ -43,8 +44,22 @@ class PruneSummaries extends Command
     {
         $days = config()->integer('summaries.retention_days');
 
+        /*
+         * Switched off, and said out loud rather than passed over quietly. A scheduled command
+         * that runs nightly and deletes nothing looks identical to one that is working, so the
+         * one run where somebody checks why nothing is being pruned should answer the question
+         * without them having to go and read the configuration.
+         */
+        if ($days === 0) {
+            $this->components->warn(
+                'Retention is switched off, so summaries and their transcripts are kept indefinitely.',
+            );
+
+            return;
+        }
+
         $deleted = Summary::query()
-            ->where('created_at', '<=', Date::now()->subDays($days))
+            ->where('requested_at', '<=', Date::now()->subDays($days))
             ->delete();
 
         if ($deleted === 0) {
