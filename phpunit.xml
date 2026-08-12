@@ -40,5 +40,10 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!-- Pinned empty so the suite runs the same way for everybody. A developer with a real
+             key configured otherwise has DataApiConnector::isConfigured() return true, and every
+             test that fakes only the oEmbed answer goes on to ask the Data API and dies for want
+             of a mock. Tests that want a key set one themselves. -->
+        <env name="YOUTUBE_API_KEY" value=""/>
     </php>
 </phpunit>

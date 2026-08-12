@@ -14,7 +14,10 @@
         "laravel/framework": "^13.17",
         "laravel/socialite": "^5.29",
         "laravel/wayfinder": "^0.1.14",
-        "socialiteproviders/authentik": "^5.3"
+        "saloonphp/laravel-plugin": "^4.3",
+        "saloonphp/saloon": "^4.0",
+        "socialiteproviders/authentik": "^5.3",
+        "spatie/laravel-data": "^4.23"
     },
     "require-dev": {
         "driftingly/rector-laravel": "^2.5",

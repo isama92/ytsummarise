@@ -2,6 +2,7 @@
 
 use Pest\Rector\Set\PestSetList;
 use Rector\Caching\ValueObject\Storage\FileCacheStorage;
+use Rector\CodingStyle\Rector\ArrowFunction\ArrowFunctionDelegatingCallToFirstClassCallableRector;
 use Rector\Config\RectorConfig;
 use Rector\TypeDeclaration\Rector\StmtsAwareInterface\DeclareStrictTypesRector;
 use RectorLaravel\Rector\ClassMethod\AddGenericReturnTypeToRelationsRector;
@@ -35,6 +36,20 @@ return RectorConfig::configure()
     ->withRules([
         AddGenericReturnTypeToRelationsRector::class,
         DeclareStrictTypesRector::class,
+    ])
+    /*
+     * Turning `fn () => helper()` into `helper(...)` is wrong inside a Pest dataset. Pest
+     * rebinds a dataset's closures to the test case, and a closure made from a plain function
+     * cannot be rebound - PHP 8.5 warns and PHP 9 will make it an error, which arrives as a
+     * failed test rather than as anything that reads like a scope problem.
+     *
+     * Scoped to tests because the rewrite is a real improvement anywhere the closure is not
+     * about to be rebound, which is everywhere else.
+     */
+    ->withSkip([
+        ArrowFunctionDelegatingCallToFirstClassCallableRector::class => [
+            __DIR__.'/tests',
+        ],
     ])
     /*
      * Doc block names are left alone: importing them churns every annotation in the

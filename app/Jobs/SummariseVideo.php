@@ -7,8 +7,8 @@ namespace App\Jobs;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
-use App\Services\YouTube\VideoLookup;
-use App\Services\YouTube\VideoPresence;
+use App\Services\YouTube\Actions\LookupVideo;
+use App\Services\YouTube\Enums\VideoPresence;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -128,7 +128,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      * The lookup arrives by method injection rather than through the constructor, so nothing
      * about it is serialised into the queue payload and a test can swap it in the container.
      */
-    public function handle(VideoLookup $lookup): void
+    public function handle(LookupVideo $lookupVideo): void
     {
         /*
          * Loaded here rather than carried, so what this reads is what is in the database at
@@ -212,7 +212,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * rate limit, and every duplicate would otherwise make the same two requests before
          * discovering it had nothing to do.
          */
-        $video = $lookup->find($summary->video_id);
+        $video = $lookupVideo->execute($summary->video_id);
 
         $error = match ($video->presence) {
             VideoPresence::Missing => SummaryError::NotFound,

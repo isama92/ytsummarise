@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Sleep;
 use Inertia\Testing\AssertableInertia;
+use Saloon\Laravel\Facades\Saloon;
 
 /*
  * The uuid is the public handle and the integer id is still the identity. HasUuids fills
@@ -115,14 +116,19 @@ test('resubmitting a video already being summarised joins it without restarting 
 /*
  * Nothing in the request path talks to YouTube. Submitting has to stay fast and has to keep
  * working while YouTube does not, so both the existence check and the title belong to the job,
- * which is allowed to be slow and allowed to fail. The suite's stray request guard is what
- * enforces this: a lookup from here throws.
+ * which is allowed to be slow and allowed to fail.
+ *
+ * Asserted twice over: the suite's Saloon guard throws a StrayRequestException on any real send,
+ * and this says outright that nothing was sent.
  */
 test('submitting a video does not wait on YouTube', function (): void {
     Queue::fake();
+    Saloon::fake([]);
 
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
+
+    Saloon::assertNothingSent();
 
     $summary = Summary::query()->sole();
 

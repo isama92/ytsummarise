@@ -14,3 +14,4 @@ Before planning or editing, find the row whose globs match the file's path and r
 | app/Jobs/** | .ai/rules/jobs.md |
 | resources/js/pages/auth/** | .ai/rules/pages-auth.md |
 | resources/js/pages/** | .ai/rules/pages.md |
+| app/Services/** | .ai/rules/services.md |

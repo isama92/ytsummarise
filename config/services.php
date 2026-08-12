@@ -1,5 +1,17 @@
 <?php
 
+/*
+ * An absent key and an empty one are the same thing, and this is where they become the same
+ * value. `YOUTUBE_API_KEY=` in an env file reads back as an empty string rather than as nothing,
+ * so without this every consumer would have to know that and check for it - and the one that
+ * forgot would ask the Data API with `key=` and be told the request was bad.
+ *
+ * is_string as well as the emptiness, because env values arrive as whatever the environment
+ * holds: a bare `YOUTUBE_API_KEY=null` is the string "null" to a shell but null to Laravel's env
+ * reader, and phpunit.xml can hand over a real boolean. See .ai/rules/config.md.
+ */
+$youtubeKey = env('YOUTUBE_API_KEY');
+
 return [
 
     /*
@@ -32,12 +44,13 @@ return [
     /*
      * Optional, and null is the ordinary case rather than a misconfiguration. Looking a
      * video up goes to the keyless oEmbed endpoint first; this key only buys a second
-     * opinion from the Data API when that did not settle whether the video exists. See
-     * App\Services\YouTube\VideoLookup, which reads it with is_string() rather than
-     * config()->string() for exactly that reason.
+     * opinion from the Data API when that did not settle whether the video exists.
+     *
+     * Null or a key somebody meant, never an empty string - normalised above, so nothing
+     * downstream has to ask the question twice.
      */
     'youtube' => [
-        'key' => env('YOUTUBE_API_KEY'),
+        'key' => is_string($youtubeKey) && $youtubeKey !== '' ? $youtubeKey : null,
     ],
 
 ];

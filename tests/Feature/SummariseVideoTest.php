@@ -6,14 +6,16 @@ use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
+use App\Services\YouTube\Requests\OembedRequest;
 use Carbon\CarbonInterval;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Laravel\Facades\Saloon;
 
 test('the job writes a summary and marks it ready', function (): void {
     Sleep::fake();
@@ -42,7 +44,7 @@ test('a video that does not exist is failed rather than summarised', function ()
     Sleep::fake();
     Log::spy();
 
-    Http::fake(['https://www.youtube.com/oembed*' => Http::response(status: 404)]);
+    Saloon::fake([OembedRequest::class => MockResponse::make(status: 404)]);
 
     $summary = Summary::factory()->pending()->create();
 
@@ -68,7 +70,7 @@ test('a video nobody could be asked about is failed as unreachable', function ()
     Sleep::fake();
     Log::spy();
 
-    Http::fake(['https://www.youtube.com/oembed*' => Http::failedConnection('timed out')]);
+    Saloon::fake([OembedRequest::class => youTubeUnreachable()]);
 
     $summary = Summary::factory()->pending()->create();
 
@@ -90,7 +92,7 @@ test('a video nobody could be asked about is failed as unreachable', function ()
 test('a video the lookup will not name is still summarised', function (): void {
     Sleep::fake();
 
-    Http::fake(['https://www.youtube.com/oembed*' => Http::response(status: 401)]);
+    Saloon::fake([OembedRequest::class => MockResponse::make(status: 401)]);
 
     $summary = Summary::factory()->pending()->create();
 
