@@ -46,18 +46,36 @@ class ExpireStalledSummaries extends Command
          * leave it failed with a finished summary still attached, which the page renders
          * as "did not work" over an answer that exists.
          */
-        Summary::query()
+        $expired = Summary::query()
             ->whereKey($videoIds->keys())
             ->where('status', SummaryStatus::Pending)
             ->update(['status' => SummaryStatus::Failed]);
+
+        /*
+         * Counted from what the update changed rather than from what was selected a moment
+         * earlier, because those differ whenever a row finishes in between: reporting the
+         * selection would claim rows this run deliberately left alone.
+         */
+        if ($expired === 0) {
+            $this->components->info('No stalled summaries.');
+
+            return;
+        }
 
         /*
          * Worth a log line rather than silence: every row here is a job that vanished,
          * and a steady trickle of them means something is wrong with the workers rather
          * than with any one video.
          */
-        Log::warning('Expired stalled summaries', ['video_ids' => $videoIds->values()->all()]);
+        Log::warning('Expired stalled summaries', [
+            'expired' => $expired,
+            /*
+             * What was selected, which is not always what changed: named separately rather
+             * than passed off as the same thing.
+             */
+            'candidates' => $videoIds->values()->all(),
+        ]);
 
-        $this->components->warn(sprintf('Expired %d stalled %s.', $videoIds->count(), str('summary')->plural($videoIds->count())));
+        $this->components->warn(sprintf('Expired %d stalled %s.', $expired, str('summary')->plural($expired)));
     }
 }

@@ -23,15 +23,11 @@ Artisan::command('inspire', function (): void {
  * stalled row immediately, because the controller resets it and queues a fresh attempt
  * without waiting for this command. This is the path for the tab nobody is watching.
  *
- * withoutOverlapping is belt and braces at this cadence: the query is idempotent and a run
- * takes about as long as one indexed query, so two could hardly meet.
+ * No withoutOverlapping. An hour apart and a run of one indexed query means two of these
+ * can hardly meet, and if they did the command is safe: its update is guarded on the status
+ * it read, so the second run changes nothing. What a mutex would add is a way to fail - it
+ * lives in the cache, which here is the database, so a run killed while holding it wedges
+ * the backstop until it expires, and the default expiry is a day. A guard that cannot
+ * plausibly be needed is not worth a failure mode that can.
  */
-Schedule::command(ExpireStalledSummaries::class)
-    ->hourly()
-    /*
-     * Two minutes, not the default day. The mutex lives in the cache, which here is the
-     * database, so it survives the restart that killed a run holding it, and at the default
-     * a container going down mid-run would skip this command for twenty-four hours. Well
-     * inside the hour between runs, so a killed run costs one skipped hour at most.
-     */
-    ->withoutOverlapping(2);
+Schedule::command(ExpireStalledSummaries::class)->hourly();

@@ -94,11 +94,20 @@ test('a summary that finishes while being written off keeps its summary', functi
         ]);
     });
 
-    $this->artisan('summaries:expire-stalled')->assertSuccessful();
+    /*
+     * And it says so. The count comes from what the update changed rather than from what
+     * was selected a moment earlier, so a run that leaves everything alone reports nothing
+     * rather than claiming rows it deliberately did not touch.
+     */
+    $this->artisan('summaries:expire-stalled')
+        ->expectsOutputToContain('No stalled summaries.')
+        ->assertSuccessful();
 
     expect($raced)->toBeTrue()
         ->and($summary->fresh()?->status)->toBe(SummaryStatus::Ready)
         ->and($summary->fresh()?->body)->toBe('Arrived at the last moment.');
+
+    Log::shouldNotHaveReceived('warning');
 });
 
 /*
