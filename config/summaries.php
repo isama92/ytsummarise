@@ -16,8 +16,12 @@ return [
     | One value doing two jobs on purpose, so they cannot disagree:
     |
     |   - the queue worker's timeout for SummariseVideo
-    |   - the lifetime of the lock that lets a second person asking for the same
-    |     video join the job already running instead of starting another.
+    |   - the lifetime of the lock that drops the second of two attempts started
+    |     for one video in the same moment.
+    |
+    | Not what joins somebody to a summary already being produced, which the lock
+    | never sees: the controller answers a pending row with the attempt already in
+    | flight and dispatches nothing at all.
     |
     | Nothing to keep in step by hand: the `summaries` connection in
     | config/queue.php derives its own retry_after from this value, because a
