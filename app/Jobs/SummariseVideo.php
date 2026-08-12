@@ -7,14 +7,17 @@ namespace App\Jobs;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
+use App\Services\Ai\Actions\SummariseTranscript;
+use App\Services\YouTube\Actions\FetchTranscript;
 use App\Services\YouTube\Actions\LookupVideo;
+use App\Services\YouTube\Data\TranscriptResult;
+use App\Services\YouTube\Enums\TranscriptPresence;
 use App\Services\YouTube\Enums\VideoPresence;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Sleep;
 use Throwable;
 
 /**
@@ -69,18 +72,6 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      */
     public int $uniqueFor;
 
-    /**
-     * Stands in for the summary until the model call exists. Deliberately obvious as
-     * placeholder text, so nobody mistakes a wiring bug for a bad summary.
-     */
-    private const string PLACEHOLDER_BODY = <<<'TEXT'
-        Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
-
-        Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-        Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.
-        TEXT;
-
     public function __construct(public int $summaryId)
     {
         $this->timeout = config()->integer('summaries.timeout');
@@ -110,33 +101,40 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     /**
      * Execute the job.
      *
-     * The sleep stands in for the latency of the model call, so the pending state on the
-     * page is actually visible while developing. Illuminate\Support\Sleep rather than
-     * sleep(), because the tests call this method directly and would otherwise pay three
-     * seconds each time; Sleep::fake() removes them.
+     * Three things happen here in an order chosen by what each one costs. The video is looked
+     * up, because a video that does not exist should not have a transcript fetched for it. The
+     * transcript is fetched, because a video with no captions should not have a model asked
+     * about it. Only then is anything summarised. Each step can write the row off on its own,
+     * and the two before the last are the cheap ones on purpose.
      *
-     * They call it directly because naming a connection above overrides the sync default in
-     * phpunit.xml, so dispatching this under test queues it rather than running it. Worth
-     * knowing before writing a test that expects a submitted video to be summarised by the
-     * time the request comes back: it will not be.
+     * Every timeout involved is now set rather than inherited, which was the open question
+     * while this was a placeholder. The prompts get summaries.model_timeout, well past the
+     * SDK's sixty second default; the whole job gets summaries.timeout; and the connection's
+     * retry_after is derived from that in config/queue.php so the queue cannot hand this to a
+     * second worker while the first is still running. The claim below makes that safe in any
+     * case, but a second worker producing a summary nobody reads is still waste.
      *
-     * When the real call replaces the placeholder, check the timeout: a model call can
-     * outlast the default 60 seconds, and the connection's retry_after must stay larger
-     * than the timeout or the queue hands the job to a second worker while the first still
-     * runs. The claim below makes that safe rather than expensive, but it is still waste.
+     * The tests call this method directly rather than dispatching, because naming a connection
+     * above overrides the sync default in phpunit.xml - a dispatched job is queued rather than
+     * run. Worth knowing before writing a test that expects a submitted video to be summarised
+     * by the time the request comes back: it will not be.
      *
-     * The lookup arrives by method injection rather than through the constructor, so nothing
-     * about it is serialised into the queue payload and a test can swap it in the container.
+     * The collaborators arrive by method injection rather than through the constructor, so
+     * nothing about them is serialised into the queue payload and a test can swap them in the
+     * container.
      */
-    public function handle(LookupVideo $lookupVideo): void
-    {
+    public function handle(
+        LookupVideo $lookupVideo,
+        FetchTranscript $fetchTranscript,
+        SummariseTranscript $summariseTranscript,
+    ): void {
         /*
          * Loaded here rather than carried, so what this reads is what is in the database at
          * the moment it runs rather than whatever was true when the job was queued. findOrFail
          * because a summary is never deleted: if one has been, that is worth a failure and a
          * log line rather than a job that quietly does nothing.
          */
-        $summary = Summary::query()->findOrFail($this->summaryId);
+        $summary = Summary::findOrFail($this->summaryId);
 
         /*
          * Anything but pending and there is nothing to do here.
@@ -179,13 +177,16 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * already said did not work.
          *
          * It also records when the work actually began, which is the only honest thing to
-         * measure the timeout against.
+         * measure the timeout against - and the moment is kept, because the final write names
+         * it to prove the claim is still this job's. See the end of this method.
          */
+        $claimedAt = Date::now();
+
         $claimed = Summary::query()
             ->whereKey($this->summaryId)
             ->where('status', SummaryStatus::Pending)
             ->whereNull('started_at')
-            ->update(['started_at' => Date::now()]);
+            ->update(['started_at' => $claimedAt]);
 
         if ($claimed === 0) {
             /*
@@ -222,52 +223,166 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
 
         /*
          * Written off here rather than by throwing, for two reasons. A video that does not
-         * exist is an ordinary outcome and does not deserve a stack trace in the log, and the
-         * work below is never reached - which matters most on the day the sleep becomes a
-         * model call somebody is billed for.
+         * exist is an ordinary outcome and does not deserve a stack trace in the log, and
+         * everything below it is never reached - which is what stops a model being asked about
+         * a video nobody can watch.
          */
         if ($error instanceof SummaryError) {
-            $summary->update([
-                'status' => SummaryStatus::Failed,
-                'error' => $error,
-            ]);
-
-            Log::info('Gave up on a video before summarising it', [
-                'video_id' => $summary->video_id,
-                'error' => $error->value,
-            ]);
+            $this->giveUp($summary, $error);
 
             return;
         }
 
-        Sleep::for(3)->seconds();
+        $transcript = $this->transcriptFor($summary, $fetchTranscript);
+
+        $transcriptError = match ($transcript->presence) {
+            TranscriptPresence::Missing => SummaryError::NoTranscript,
+            TranscriptPresence::Unavailable => SummaryError::Unavailable,
+            TranscriptPresence::Found => null,
+        };
 
         /*
-         * Written by id rather than through the instance loaded at the top, because that
-         * instance's idea of the row predates the work and Eloquent only writes what it
-         * believes has changed. summaries:expire can have stamped a reason on the row while
-         * this job was working, and clearing it through a model that never saw it set is a
-         * no-op: the assignment looks clean, the column is left as it was, and a ready summary
-         * keeps an explanation of why it failed.
+         * The second of the two cheap refusals, and the last chance to make one. A video with
+         * no captions has nothing to summarise however capable the model is, and the difference
+         * between that and not having been able to fetch them is the difference between a
+         * message that invites another attempt and one that does not.
          */
-        Summary::query()->whereKey($this->summaryId)->update([
-            'status' => SummaryStatus::Ready,
+        if ($transcriptError instanceof SummaryError) {
+            $this->giveUp($summary, $transcriptError);
 
-            /*
-             * Written with the summary rather than before it, so the page shows a heading and
-             * the text it belongs to at the same moment instead of a title sitting over a
-             * skeleton. Null when the lookup found the video but was not allowed to name it.
-             */
-            'title' => $video->title,
-            'body' => self::PLACEHOLDER_BODY,
+            return;
+        }
 
+        /*
+         * Stored before the model is asked anything, which is the point of storing it at all.
+         * The two expensive steps fail independently: fetching this is what YouTube can refuse,
+         * and summarising it is what can come back unusable. Written now rather than with the
+         * summary means a failure of the second kind leaves the transcript behind, and the
+         * retry re-runs only the model over exactly the words this attempt read.
+         *
+         * The language goes with it because nothing can recover it by looking at the text, and
+         * without it a reused transcript could not be told whether it needs translating.
+         */
+        $summary->update([
+            'transcript' => $transcript->text,
+            'transcript_language' => $transcript->language,
+        ]);
+
+        $outline = $summariseTranscript->execute($transcript);
+
+        /*
+         * By key, and not $summary->update() like the write fifteen lines above it. The
+         * difference is 'error' => null, and it is not a style choice.
+         *
+         * Eloquent writes only what it believes has changed, and this instance last saw the row
+         * before the work started, when the error column was already null. Assigning null to it
+         * is therefore not a change, so Eloquent leaves the column out of the statement
+         * entirely. Meanwhile summaries:expire can have stamped a reason on the row while this
+         * job was legitimately working - its horizon is deliberately blunt - and the result is a
+         * ready summary that still says why it failed. The assignment looks clean and does
+         * nothing, which is the worst shape a bug can have.
+         *
+         * This form has no opinion about what the row used to hold: it writes every column named
+         * here, once, whatever anybody else did in between. The write above can be an ordinary
+         * model update because nothing else writes those two columns, so there is no value it
+         * could be asked to clear back to what it already believes.
+         *
+         * "a summary that finishes after being written off does not keep the reason" is the test
+         * that fails if this is simplified.
+         *
+         * Conditional on the claim, though, which is the one thing it does have an opinion
+         * about. Without that this job writes its summary whatever has happened to the row since
+         * it started, and there is a way for that to be the wrong summary: summaries:expire
+         * writes a long-queued attempt off, somebody submits the video again, the controller
+         * clears started_at and a second job claims the row and starts work - and then this one
+         * finishes and stamps its own older outline over an attempt that replaced it, with the
+         * newer job still running behind it. Naming the moment this job claimed makes that write
+         * affect nothing at all, which is what it should do.
+         */
+        $written = Summary::query()
+            ->whereKey($this->summaryId)
+            ->where('started_at', $claimedAt)
+            ->update([
+                'status' => SummaryStatus::Ready,
+
+                /*
+                 * Written with the summary rather than before it, so the page shows a heading and
+                 * the text it belongs to at the same moment instead of a title sitting over a
+                 * skeleton. Null when the lookup found the video but was not allowed to name it.
+                 */
+                'title' => $video->title,
+                'outline' => $outline->toArray(),
+
+                /* Cleared rather than left alone, for the reason above. */
+                'error' => null,
+            ]);
+
+        if ($written === 0) {
             /*
-             * Cleared rather than left alone. summaries:expire can write a reason onto a row
-             * this job is still legitimately working on - its horizon is deliberately blunt -
-             * and a ready summary carrying an explanation of why it failed is a trap for
-             * whatever reads the column next.
+             * The work was done and thrown away, which is worth a line: it is the only way to
+             * tell this apart from an ordinary success in a worker log, and a steady trickle of
+             * it means attempts are being written off while their workers are still alive -
+             * which is a horizon that wants lengthening rather than one video that went wrong.
              */
-            'error' => null,
+            Log::warning('Finished a summary that had already been superseded', [
+                'video_id' => $summary->video_id,
+                'claimed_at' => $claimedAt->toIso8601String(),
+            ]);
+        }
+    }
+
+    /**
+     * The words to summarise, fetched or remembered.
+     *
+     * A row that already holds one is one whose last attempt got this far and then failed at the
+     * model, and the retry that produced this job left the transcript alone precisely so it
+     * could be picked up again. Reusing it means the retry is a model call and nothing else: no
+     * second process, no second request to YouTube, and the new attempt reads exactly the words
+     * the failed one did rather than whatever the captions say today.
+     *
+     * Both columns or neither. They are written in one statement above, so a row holding one
+     * without the other is not something that happens; the check is what makes the language safe
+     * to hand over as a string rather than something to re-derive.
+     */
+    private function transcriptFor(Summary $summary, FetchTranscript $fetchTranscript): TranscriptResult
+    {
+        if ($summary->transcript !== null && $summary->transcript_language !== null) {
+            Log::debug('Summarising a video from the transcript already on the row', [
+                'video_id' => $summary->video_id,
+            ]);
+
+            return TranscriptResult::found($summary->transcript, $summary->transcript_language);
+        }
+
+        return $fetchTranscript->execute($summary->video_id);
+    }
+
+    /**
+     * Stop, with a reason somebody can read.
+     *
+     * Through the instance rather than by key, unlike the final write: every column named here
+     * differs from what that instance holds, so Eloquent has no chance to decide nothing
+     * changed. Status goes from pending to failed and the reason from null to something, both
+     * on every path that reaches this.
+     *
+     * It does overwrite a reason another process may have recorded, which is the opposite of
+     * what failed() does, and that asymmetry is deliberate. summaries:expire can write a row
+     * off as timed_out while this job is still working - the transcript branch below reaches
+     * here after a subprocess and an http request, so the window is real - and "that video has
+     * no subtitles" is both truer and more useful than "this took too long". The job has
+     * looked; the horizon only guessed. failed() keeps the first reason instead because a job
+     * that threw has nothing better to offer than "unknown".
+     */
+    private function giveUp(Summary $summary, SummaryError $error): void
+    {
+        $summary->update([
+            'status' => SummaryStatus::Failed,
+            'error' => $error,
+        ]);
+
+        Log::info('Gave up on a video before summarising it', [
+            'video_id' => $summary->video_id,
+            'error' => $error->value,
         ]);
     }
 
@@ -290,14 +405,20 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      */
     public function failed(?Throwable $exception): void
     {
-        $summary = Summary::query()->find($this->summaryId);
+        $summary = Summary::find($this->summaryId);
 
         $ready = $summary?->status === SummaryStatus::Ready;
 
         if ($summary instanceof Summary && ! $ready) {
             $summary->update([
                 'status' => SummaryStatus::Failed,
-                'body' => null,
+                'outline' => null,
+
+                /*
+                 * The transcript is deliberately not cleared alongside it. A job that threw at
+                 * the model has one on the row, and leaving it is what lets the retry be a model
+                 * call and nothing more; see transcriptFor().
+                 */
 
                 /*
                  * The first explanation wins. A row already carrying a reason was written off

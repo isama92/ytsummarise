@@ -52,6 +52,6 @@ class FirstUserController extends Controller
      */
     private function abortUnlessSetupIsPending(): void
     {
-        abort_if(config('auth.enabled') || User::query()->exists(), 404);
+        abort_if(config('auth.enabled') || User::exists(), 404);
     }
 }

@@ -7,6 +7,19 @@
 # deployed with another.
 set -e
 
+# An empty APP_KEY is the one misconfiguration this cannot survive and would not report.
+# Nothing below touches the encrypter, and /up is registered without the web middleware
+# group, so an empty key still caches, still migrates and still answers the healthcheck
+# 200 - and then 500s on every real request, with the queue and the scheduler released
+# into working against it by that healthy status. Failing here stops the deploy instead,
+# and because those two wait on this container being healthy, it stops all three.
+if [ -z "${APP_KEY}" ]; then
+    echo 'APP_KEY is empty. Laravel cannot encrypt cookies or sessions without it.' >&2
+    echo 'Generate one with: echo "base64:$(openssl rand -base64 32)"' >&2
+    echo 'then set it in .env and deploy again. The README explains why this is fatal.' >&2
+    exit 1
+fi
+
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache

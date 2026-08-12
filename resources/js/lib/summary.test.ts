@@ -5,7 +5,7 @@ import { errorKeyOf, stageKeyOf } from './summary';
 const summary = (attributes: Partial<Summary> = {}): Summary => ({
     status: 'pending',
     title: null,
-    body: null,
+    outline: null,
     error: null,
     requestedAt: '2026-08-12T09:00:00+00:00',
     startedAt: null,

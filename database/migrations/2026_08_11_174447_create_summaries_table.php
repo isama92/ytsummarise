@@ -47,10 +47,57 @@ return new class extends Migration
             $table->string('title')->nullable();
 
             /*
+             * What was summarised, as plain text with the caption timings taken out.
+             *
+             * Kept rather than discarded because the two expensive steps fail
+             * independently. Fetching this is the step YouTube can refuse; the model call
+             * is the step that can come back unusable. Keeping the transcript means a
+             * retry after the second kind of failure re-runs only the model, offline, over
+             * exactly the text the first attempt saw.
+             *
+             * Other people's words, which is why this is the column with a retention window
+             * attached: summaries:prune deletes the row, and this with it, once nobody has
+             * asked for the video in summaries.retention_days.
+             *
+             * Null for every attempt that failed before reaching one, which includes every
+             * video that has no captions at all.
+             */
+            $table->longText('transcript')->nullable();
+
+            /*
+             * What language the transcript above is in, as a primary subtag: `en`, `nl`, `pt`.
+             *
+             * Written with it and null with it, because it cannot be recovered from the text by
+             * anything cheaper than asking a model. It decides whether a summary needs
+             * translating afterwards, so a reused transcript without it would be summarised as
+             * though it were English.
+             *
+             * Short, but not eleven-characters short: a primary subtag is two or three letters
+             * today and this is not a column worth being clever about.
+             */
+            $table->string('transcript_language', 12)->nullable();
+
+            /*
+             * The summary itself, as an object rather than as prose: a headline, the main
+             * points and the takeaways, each of them separately addressable so the page can
+             * lay them out instead of printing paragraphs.
+             *
+             * One column and not two, holding both language versions. A video that is not
+             * in English is summarised in its own language and that summary is then
+             * translated, and the two belong to each other - they are one answer about one
+             * video, written twice. Splitting them into columns would make every read
+             * assemble them again, and a separator inside one text column would be a parser
+             * nobody wants to own. The english key is null when there was nothing to
+             * translate.
+             *
+             * jsonb rather than json: Postgres parses it once on write instead of on every
+             * read, and it is the type that can be indexed if anything ever needs to look
+             * inside. Sqlite, which the tests run on, has neither and stores text either way.
+             *
              * Null until the job has something to write. Nothing distinguishes "not
              * summarised yet" from "summarised as nothing", because status already does.
              */
-            $table->text('body')->nullable();
+            $table->jsonb('outline')->nullable();
 
             /*
              * When the attempt currently in flight was asked for. What the page counts up

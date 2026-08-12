@@ -41,6 +41,26 @@ return [
     'unrecognised' => 'That does not look like a YouTube link or video code.',
 
     /*
+     * The parts of a summary, as headings above them.
+     *
+     * Named for what each part is for rather than for what it contains, because that is the
+     * question somebody scanning the page is asking: which of these do I read.
+     */
+    'sections' => [
+        'headline' => 'In short',
+        'points' => 'What it covers',
+        'takeaways' => 'Worth remembering',
+    ],
+
+    /*
+     * The heading over the English version of a summary of a video that was not in English.
+     *
+     * Only ever shown when there are two, so it does not need to say which language the one
+     * above is in - it says which language this one is in, which is the useful half.
+     */
+    'translation' => 'In English',
+
+    /*
      * Keyed by the values of App\Enums\SummaryError, so a reason from the database needs no
      * lookup table to become a sentence.
      *
@@ -50,6 +70,14 @@ return [
     'errors' => [
         'not_found' => 'That video does not exist, or it is private.',
         'unreachable' => 'We could not reach YouTube. Submit it again to try once more.',
+
+        /*
+         * The other reason that does not invite a retry, for the same reason not_found does
+         * not: the captions are what gets summarised, and a video without any has nothing to
+         * summarise however many times it is asked for.
+         */
+        'no_transcript' => 'That video has no subtitles, so there is nothing to summarise.',
+        'unavailable' => 'We could not get the subtitles for that video. Submit it again to try once more.',
         'timed_out' => 'This one waited too long and was given up on. Submit it again to try once more.',
         'unknown' => 'Summarising this video did not work. Submit it again to try once more.',
     ],

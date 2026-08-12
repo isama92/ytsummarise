@@ -1,0 +1,150 @@
+# Weekly dependency updates, as a pull request.
+#
+# The reason this exists rather than a bare `composer update` / `npm update`: both of
+# those move only the LOCK files. The constraints in composer.json and package.json keep
+# their original floors, so the repository slowly accumulates a gap between what is
+# declared and what is installed. Two extra tools close it, one per ecosystem, and they
+# are the whole point of this workflow:
+#
+#   - `composer bump` rewrites each requirement's lower bound to the version that is
+#     actually installed. It skips platform packages, so `"php": "^8.3"` is left alone.
+#   - `npm-check-updates --target semver` does the same for package.json, raising each
+#     range's floor to the highest release that range already allows.
+#
+# Neither of them crosses a major version, and neither does `composer update`, which
+# respects the existing constraints. That is deliberate: a major is a decision, not
+# something a scheduled job should open on a Wednesday morning. Crossing one stays a
+# manual `composer require vendor/pkg:^2` or `ncu -u --target latest`.
+name: automatic updates
+
+on:
+  schedule:
+    # Wednesday 07:00 UTC. Cron has no timezone here, so this drifts by an hour against
+    # Dutch local time across DST; nothing depends on the exact hour.
+    - cron: '0 7 * * 3'
+  # So the first run can be triggered by hand rather than waited for. Do that once
+  # before trusting the schedule; see the note on `composer update` below.
+  workflow_dispatch:
+
+# Wider than every other workflow in this directory, which are all read-only:
+# create-pull-request pushes a branch (contents) and opens the pull request against it
+# (pull-requests).
+permissions:
+  contents: write
+  pull-requests: write
+
+# No `-${{ github.ref }}` suffix, unlike the other workflows: this only ever runs on the
+# default branch, so the workflow name alone is the whole identity. A manual run started
+# while the scheduled one is going supersedes it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  updates:
+    name: Update dependencies and open a pull request
+    runs-on: ubuntu-latest
+    # Generous: this bootstraps the application, updates both ecosystems, runs the full
+    # check suite and builds the assets twice. Also the backstop if the `boost:update`
+    # note below ever comes true.
+    timeout-minutes: 20
+
+    # `composer setup` runs `migrate --force`, and .env.example points at a Postgres no
+    # runner has. Same override as tests.yml, for the same reason: it keeps this
+    # workflow free of a database service container. The suite reads phpunit.xml and is
+    # unaffected either way.
+    env:
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+
+    steps:
+      # Deliberately WITHOUT `persist-credentials: false`, which every other workflow
+      # here sets. create-pull-request pushes the update branch through the remote this
+      # step configures, so stripping the credentials would leave it nothing to push
+      # with.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          coverage: none
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # The same one-command bootstrap tests.yml uses, so there is a single definition of
+      # "get this application running" for CI. It does build the assets once before
+      # anything has been updated, which is wasted work, but sharing the script with
+      # tests.yml is worth more than the half minute.
+      - name: Setup application
+        run: composer setup
+
+      # NOTE for the first run: this fires composer.json's post-update-cmd, which calls
+      # `artisan boost:update`. That command defaults to --discover, i.e. it can prompt.
+      # Symfony Console turns interaction off by itself when stdin is not a TTY, which is
+      # the case here, so it should pass straight through - but `composer install` never
+      # triggers post-update-cmd, so no workflow in this repository has exercised it yet.
+      # Trigger this manually once and watch that step. It also regenerates AGENTS.md and
+      # CLAUDE.md, so expect those in the diff.
+      - name: Update Composer dependencies
+        run: |
+          composer update --no-interaction --no-progress
+          composer bump
+
+      # Two commands because they do different halves. ncu rewrites package.json and
+      # (with --install always) reinstalls to match; `npm update` then settles
+      # package-lock.json for anything ncu left within range.
+      - name: Update npm dependencies
+        run: |
+          npx --yes npm-check-updates -u --target semver --install always
+          npm update
+
+      # Running the suite HERE rather than leaving it to the pull request is not
+      # belt-and-braces, it is the only check that happens: GitHub refuses to trigger
+      # workflows from events raised by GITHUB_TOKEN, so tests.yml and code-quality.yml
+      # stay silent on a pull request opened below. See the token comment in the last step.
+      - name: Run CI checks
+        run: composer ci:check
+
+      # Worth its own step after the update: rolldown, @tailwindcss/oxide and
+      # lightningcss are native binaries resolved per-platform, and they are exactly what
+      # an npm update can break. Nothing in ci:check compiles anything.
+      - name: Build assets
+        run: npm run build
+
+      - name: Create a pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          # GITHUB_TOKEN works with no setup, at the cost of a pull request that runs no
+          # checks of its own (hence the two steps above). Add an UPDATES_TOKEN secret -
+          # a fine-grained PAT with contents+pull-requests write, or a GitHub App token -
+          # and the pull request starts behaving like any other, with tests.yml,
+          # code-quality.yml and autofix.ci all running on it. This expression picks it up
+          # automatically once it exists; an undefined secret is an empty string.
+          token: ${{ secrets.UPDATES_TOKEN || secrets.GITHUB_TOKEN }}
+          commit-message: Update dependencies
+          # Reused rather than dated, so a week where nothing merged updates the open
+          # pull request instead of opening a second one. delete-branch tidies up after
+          # a merge or a close.
+          branch: update-dependencies
+          delete-branch: true
+          title: Dependency updates
+          body: |
+            Automated weekly update of the Composer and npm dependencies.
+
+            `composer update` then `composer bump`, and `npm-check-updates --target
+            semver` then `npm update`, so the constraints in `composer.json` and
+            `package.json` move along with the lock files. Neither ecosystem crosses a
+            major version; those stay manual.
+
+            `composer ci:check` and `npm run build` both passed on this branch before
+            this pull request was opened. If no checks are reported below, that is
+            expected: see the token comment in `.github/workflows/updates.yml`.
+          labels: dependencies
+          assignees: isama92

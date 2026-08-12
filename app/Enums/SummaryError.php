@@ -28,6 +28,23 @@ enum SummaryError: string
     case Unreachable = 'unreachable';
 
     /**
+     * The video is real and has no captions of any kind, not even automatic ones.
+     *
+     * A permanent answer rather than a fault, and the message says so: there is nothing to
+     * summarise and asking again produces the same nothing. Told apart from Unavailable
+     * because that one is worth another attempt and this one never is.
+     */
+    case NoTranscript = 'no_transcript';
+
+    /**
+     * The transcript could not be fetched, which is not the same as there not being one.
+     *
+     * yt-dlp missing, failing or hanging, or a caption track that did not arrive. Worth
+     * trying again, because none of those says anything about the video.
+     */
+    case Unavailable = 'unavailable';
+
+    /**
      * Nothing was ever going to finish this one; summaries:expire wrote it off.
      */
     case TimedOut = 'timed_out';

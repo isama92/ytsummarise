@@ -56,15 +56,26 @@ return [
          * timeout or the worker reserves a job that is still running, and summarising a
          * video twice is a paid mistake. Reading the env here rather than
          * config('summaries.timeout') because config files load alphabetically, so
-         * summaries.php does not exist yet when this one is read. The floor is repeated
-         * from there for the same reason; SummariseVideoTest asserts the two agree.
+         * summaries.php does not exist yet when this one is read.
+         *
+         * Which means the whole derivation is repeated from there rather than only the
+         * floor: that timeout is itself derived from what the steps inside the job are
+         * allowed to take, so reading SUMMARY_TIMEOUT alone would leave this below the
+         * real timeout for anybody who raised a step budget. The arithmetic is duplicated
+         * knowingly and SummariseVideoTest asserts the two agree, which is what catches it
+         * if only one of them is ever changed.
          */
         'summaries' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => 'summaries',
-            'retry_after' => max(60, (int) env('SUMMARY_TIMEOUT', 1800)) + 60,
+            'retry_after' => max(
+                (2 * max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120)))
+                    + (3 * max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600)))
+                    + 60,
+                max(60, (int) env('SUMMARY_TIMEOUT', 3600)),
+            ) + 60,
             'after_commit' => false,
         ],
 

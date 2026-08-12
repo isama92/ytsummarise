@@ -29,12 +29,14 @@ use Override;
  * @property string $video_id
  * @property SummaryStatus $status
  * @property string|null $title
- * @property string|null $body
+ * @property string|null $transcript
+ * @property string|null $transcript_language
+ * @property array<string, mixed>|null $outline
  * @property SummaryError|null $error
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
  */
-#[Fillable(['video_id', 'status', 'title', 'body', 'error', 'requested_at', 'started_at'])]
+#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'outline', 'error', 'requested_at', 'started_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -79,6 +81,19 @@ class Summary extends Model
         return [
             'status' => SummaryStatus::class,
             'error' => SummaryError::class,
+
+            /*
+             * A plain array rather than a cast to SummaryOutline, because nothing here would
+             * gain anything from the object. One place builds an outline - SummariseTranscript,
+             * with a constructor - and one place reads it, the page, which receives it as json
+             * either way. Casting would put a hydration step between the two whose only job is
+             * to be kept in step with both.
+             *
+             * It is not a promise that an outline of any other shape will be handled. The page
+             * reads the keys it expects, so the shape written and the shape rendered have to
+             * agree; there is simply no third party in between to disagree with them.
+             */
+            'outline' => 'array',
             'requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
         ];

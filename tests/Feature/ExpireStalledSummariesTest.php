@@ -13,6 +13,27 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 
+/**
+ * A summary that landed while the expiry command was part way through a run.
+ *
+ * Written by hand rather than through the factory, so the tests below can assert that this
+ * exact outline is still on the row afterwards.
+ *
+ * @return array<string, mixed>
+ */
+function arrivedOutline(): array
+{
+    return [
+        'language' => 'en',
+        'original' => [
+            'headline' => 'Arrived at the last moment',
+            'points' => ['The one thing it covers'],
+            'takeaways' => ['The one thing worth remembering'],
+        ],
+        'english' => null,
+    ];
+}
+
 /*
  * A job that never runs never calls failed(), so without this a row stays pending and the
  * page waits on it forever.
@@ -147,10 +168,12 @@ test('a summary that finishes while being written off keeps its summary', functi
 
         $raced = true;
 
-        Summary::query()->whereKey($summary->getKey())->update([
-            'status' => SummaryStatus::Ready,
-            'body' => 'Arrived at the last moment.',
-        ]);
+        Summary::query()
+            ->whereKey($summary->getKey())
+            ->update([
+                'status' => SummaryStatus::Ready,
+                'outline' => arrivedOutline(),
+            ]);
     });
 
     /*
@@ -164,7 +187,7 @@ test('a summary that finishes while being written off keeps its summary', functi
 
     expect($raced)->toBeTrue()
         ->and($summary->fresh()?->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->fresh()?->body)->toBe('Arrived at the last moment.');
+        ->and($summary->fresh()?->outline)->toBe(arrivedOutline());
 
     Log::shouldNotHaveReceived('warning');
 });
@@ -193,10 +216,12 @@ test('the log distinguishes what was selected from what was failed', function ()
 
         $raced = true;
 
-        Summary::query()->whereKey($finishFirst)->update([
-            'status' => SummaryStatus::Ready,
-            'body' => 'Arrived at the last moment.',
-        ]);
+        Summary::query()
+            ->whereKey($finishFirst)
+            ->update([
+                'status' => SummaryStatus::Ready,
+                'outline' => arrivedOutline(),
+            ]);
     });
 
     $this->artisan('summaries:expire')->assertSuccessful();
@@ -239,13 +264,15 @@ test('the horizon leaves room for the work and for waiting', function (): void {
 
 /*
  * The floor in config/summaries.php that keeps that true whatever SUMMARY_STALE_AFTER says is
- * deliberately not tested, and this note is here so nobody adds one back. Reaching it means
- * driving env() from a test, and env() answers from $_ENV and $_SERVER before it looks at
- * anything putenv set: a machine whose .env omits the key honours the putenv and a machine
- * whose .env has it ignores it, so the test passes locally and fails in CI. See the trap
- * recorded in .ai/rules/config.md.
+ * not tested here, and this note used to say it could not be: reaching it means driving env()
+ * from a test, and env() answers from $_SERVER and $_ENV before it looks at anything putenv
+ * set, so a putenv is honoured on a machine whose .env omits the key and ignored on one whose
+ * .env has it. That trap is real and cost three red builds - see .ai/rules/config.md - but it
+ * is now worked around rather than avoided: configWithEnv() in tests/Pest.php writes all three
+ * layers and puts them back, which is what phpunit.xml does for credentials.
  *
- * What the assertion above covers is the regression that can actually reach anybody: the
- * shipped default in .env.example being lowered under the room the work needs. Reverting the
- * floor itself changes nothing observable until somebody also overrides the variable.
+ * Still not tested, for the smaller reason. What the assertion above covers is the regression
+ * that can actually reach anybody: the shipped default in .env.example being lowered under the
+ * room the work needs. Reverting the floor itself changes nothing observable until somebody
+ * also overrides the variable.
  */
