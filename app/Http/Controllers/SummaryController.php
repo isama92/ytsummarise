@@ -58,21 +58,21 @@ class SummaryController extends Controller
         }
 
         /*
-         * A failed row starts over, and its clock with it. So does one that has been
-         * pending longer than a video is given: the attempt about to be queued below is a
-         * new one, and leaving the old requested_at in place would have the expiry command
-         * write it off within the minute, telling somebody it did not work while it is
-         * actively running.
+         * A failed row starts over, and so does one whose worker went missing mid job. The
+         * clock restarts with them, and so does the claim: leaving started_at set would make
+         * the row unclaimable, and every job queued for it from then on would find somebody
+         * else apparently working and return having done nothing.
          *
-         * A pending row still inside its window is left exactly as it is, because whoever
-         * asked first is already waiting and restarting their clock would both mislead
-         * them and push back the moment this gets written off.
+         * A row somebody is already working on, or one still waiting its turn in the queue,
+         * is left exactly as it is. Whoever asked first is already waiting, and restarting
+         * their clock would mislead them; the dispatch below is what joins them to it.
          */
         if ($summary->status === SummaryStatus::Failed || $summary->isStalled()) {
             $summary->update([
                 'status' => SummaryStatus::Pending,
                 'body' => null,
                 'requested_at' => Date::now(),
+                'started_at' => null,
             ]);
         }
 
@@ -87,11 +87,10 @@ class SummaryController extends Controller
         }
 
         /*
-         * Dispatched for anything not ready, including a row already pending. That is not
-         * a duplicate: the job is unique per video, so while one is in flight this is
-         * dropped and the browser simply joins the job already running. Once the lock has
-         * lapsed - which it cannot outlive the timeout - the same call is what starts the
-         * replacement attempt.
+         * Dispatched for anything not ready, including a row already pending. That is not a
+         * duplicate: the job is unique per video, so while one is in flight this is dropped
+         * and the browser simply joins it. Should the lock have lapsed and two end up
+         * queued, the claim in the job settles which one does the work.
          */
         SummariseVideo::dispatch($summary);
 
@@ -134,6 +133,12 @@ class SummaryController extends Controller
                  * starting from zero.
                  */
                 'requestedAt' => $summary->requested_at->toIso8601String(),
+
+                /*
+                 * Null until a worker begins, which is the difference between waiting in a
+                 * queue and being worked on. The page says which; the wording lives there.
+                 */
+                'startedAt' => $summary->started_at?->toIso8601String(),
             ] : null,
         ]);
     }

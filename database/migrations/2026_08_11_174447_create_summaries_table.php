@@ -53,9 +53,8 @@ return new class extends Migration
             $table->text('body')->nullable();
 
             /*
-             * When the attempt currently in flight was asked for, which is what the page
-             * counts up from while it waits and what decides when a summary has been
-             * pending long enough to write off.
+             * When the attempt currently in flight was asked for. This is the clock the
+             * page counts up from.
              *
              * Not created_at: a row outlives its attempts. Retrying a summary that failed
              * starts a new clock, while somebody joining a job already running has to see
@@ -63,12 +62,26 @@ return new class extends Migration
              */
             $table->timestamp('requested_at');
 
+            /*
+             * When a worker actually began, which is a different question from when it was
+             * asked for: a job can sit in a queue behind another for as long as that one
+             * takes. Timing a timeout from requested_at compared an enqueue time against a
+             * runtime budget, and wrote summaries off while their jobs were still queued.
+             *
+             * Null means no worker has started, and setting it is how a job claims the row:
+             * the update is conditional on it still being null, so of two jobs for the same
+             * video exactly one can win and the other returns having done nothing. That is
+             * a guarantee from the database rather than from a lock's expiry.
+             */
+            $table->timestamp('started_at')->nullable();
+
             $table->timestamps();
 
             /*
-             * The one query the expiry command runs.
+             * The two queries the recovery command runs: rows it may have to write off, and
+             * rows it may have to queue again.
              */
-            $table->index(['status', 'requested_at']);
+            $table->index(['status', 'started_at']);
         });
     }
 

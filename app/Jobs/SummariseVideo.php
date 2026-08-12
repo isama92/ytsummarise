@@ -9,6 +9,7 @@ use App\Models\Summary;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 use Throwable;
@@ -27,15 +28,9 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     /**
      * One attempt, deliberately.
      *
-     * Not timidity about retrying: it is what keeps three horizons equal. With more than
-     * one attempt the worst case life of a job is tries × timeout plus the backoff, which
-     * is longer than the uniqueness lock below, so the lock would lapse part way through
-     * the chain and a submission in that window would queue a second paid summary of the
-     * same video. Aligning them means one attempt.
-     *
-     * Nothing is lost: a failure marks the row and the page offers to submit again, so
-     * retrying is a decision rather than an automatic second charge for a call that may
-     * have failed for a reason that will not change.
+     * A failure marks the row and the page offers to submit again, so retrying is a
+     * decision rather than an automatic second charge for a call that may well fail the
+     * same way twice.
      */
     public int $tries = 1;
 
@@ -47,11 +42,14 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     /**
      * How long the uniqueness lock survives.
      *
-     * The same value as the timeout, and that matters twice. While it is held, a second
-     * person asking for the same video joins this job rather than starting another, which
-     * is the whole point. And because it cannot outlive the timeout, a worker killed mid
-     * job cannot hold this video hostage: the lock lapses at the same moment the expiry
-     * command gives up on the row, so the next person to ask starts a fresh attempt.
+     * While it is held, a second person asking for the same video joins this job rather
+     * than starting another, which is the point of it.
+     *
+     * It is not what makes summarising twice impossible, and it was a mistake to treat it
+     * as though it were. The TTL starts when the job is dispatched, not when a worker picks
+     * it up, so a job that waits in a queue and then runs can outlive its own lock. The
+     * claim in handle() is the guarantee; this is the optimisation that usually saves us
+     * needing it.
      */
     public int $uniqueFor;
 
@@ -109,6 +107,27 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * already reading is rewritten. failed() guards the same path from the other side.
          */
         if ($this->summary->status === SummaryStatus::Ready) {
+            return;
+        }
+
+        /*
+         * Claim the row before doing anything that costs money.
+         *
+         * Conditional on started_at still being null, so of any number of jobs for this
+         * video exactly one update affects a row and the rest return having done nothing.
+         * The database decides, which is what makes it a guarantee: the uniqueness lock
+         * cannot provide one, because its TTL starts at dispatch and a job that waited in a
+         * queue can outlive it while still running.
+         *
+         * It also records when the work actually began, which is the only honest thing to
+         * measure the timeout against.
+         */
+        $claimed = Summary::query()
+            ->whereKey($this->summary->getKey())
+            ->whereNull('started_at')
+            ->update(['started_at' => Date::now()]);
+
+        if ($claimed === 0) {
             return;
         }
 

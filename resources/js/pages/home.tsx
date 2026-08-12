@@ -9,6 +9,7 @@ import AppHeader from '@/components/app-header';
 import AppLogoIcon from '@/components/app-logo-icon';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
+import { elapsedSince } from '@/lib/elapsed';
 import { cn } from '@/lib/utils';
 import { extractVideoId } from '@/lib/youtube';
 import type { Summary } from '@/types';
@@ -30,15 +31,26 @@ type SummaryForm = {
 };
 
 /**
- * Minutes and seconds since a summary was asked for.
+ * Where a summary has got to, in a word.
+ *
+ * Queued and processing are both `pending` on the server, which is right - they are the same
+ * state of the same row - so the difference is whether a worker has claimed it, and saying
+ * so is what explains a long wait when the queue is backed up.
  */
-function elapsedSince(requestedAt: string, now: number): string {
-    const seconds = Math.max(
-        0,
-        Math.floor((now - Date.parse(requestedAt)) / 1000),
-    );
+function stageOf(summary: Summary): string | null {
+    if (summary.status === 'ready') {
+        return 'Ready';
+    }
 
-    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+    /*
+     * Nothing for a failure. The message below it already says it did not work and what to
+     * do about it, and a one word label above that only says it twice.
+     */
+    if (summary.status === 'failed') {
+        return null;
+    }
+
+    return summary.startedAt === null ? 'Queued' : 'Processing';
 }
 
 /*
@@ -231,6 +243,8 @@ export default function Home({ videoId, summary }: HomeProps) {
                      * the redirect lands and says what is actually being summarised.
                      */
                     const describes = processing ? null : summary;
+                    const stage =
+                        describes === null ? null : stageOf(describes);
 
                     const message = isUnrecognised
                         ? 'That does not look like a YouTube link or video code.'
@@ -358,21 +372,34 @@ export default function Home({ videoId, summary }: HomeProps) {
                                     aria-busy={isWorking}
                                     className="mt-12 w-full"
                                 >
-                                    {/*
-                                     * Hidden from assistive technology on purpose: this
-                                     * sits inside a polite live region, and a number that
-                                     * changes every second would be read out every
-                                     * second. The busy state already says it is working.
-                                     */}
-                                    {isWorking && describes !== null && (
-                                        <p
-                                            aria-hidden="true"
-                                            className="text-sm text-muted-foreground tabular-nums"
-                                            data-test="elapsed"
-                                        >
-                                            {elapsedSince(
-                                                describes.requestedAt,
-                                                now,
+                                    {describes !== null && stage !== null && (
+                                        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                                            {/*
+                                             * Announced, unlike the clock beside it. It
+                                             * changes twice in a whole wait, and a queue
+                                             * finally reaching this video is exactly what a
+                                             * polite region is for.
+                                             */}
+                                            <span data-test="stage">
+                                                {stage}
+                                            </span>
+
+                                            {/*
+                                             * Hidden from assistive technology on purpose:
+                                             * a number that changes every second inside a
+                                             * live region would be read out every second.
+                                             */}
+                                            {isWorking && (
+                                                <span
+                                                    aria-hidden="true"
+                                                    className="tabular-nums"
+                                                    data-test="elapsed"
+                                                >
+                                                    {elapsedSince(
+                                                        describes.requestedAt,
+                                                        now,
+                                                    )}
+                                                </span>
                                             )}
                                         </p>
                                     )}

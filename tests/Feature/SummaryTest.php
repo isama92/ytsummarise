@@ -173,10 +173,14 @@ test('a video with no title still has a summary', function (): void {
  * attempt and its clock has to start again. Leaving the old requested_at in place had the
  * expiry command write the new attempt off within the minute.
  */
-test('resubmitting a video that has been pending too long starts a new attempt', function (): void {
+test('resubmitting a video whose worker went missing starts a new attempt', function (): void {
     Queue::fake();
 
-    $summary = Summary::factory()->stalled()->create(['video_id' => 'dQw4w9WgXcQ']);
+    $summary = Summary::factory()->stalled()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'requested_at' => Date::now()->subHour(),
+    ]);
+
     $abandonedAt = $summary->requested_at;
 
     $this->actingAs(User::factory()->create())
@@ -189,8 +193,31 @@ test('resubmitting a video that has been pending too long starts a new attempt',
 
     expect($summary->status)->toBe(SummaryStatus::Pending)
         ->and($summary->requested_at->greaterThan($abandonedAt))->toBeTrue()
+        /*
+         * The claim is released with the clock. Leaving started_at set would make the row
+         * unclaimable, and every job queued for it from then on would find somebody else
+         * apparently working on it and return having done nothing at all.
+         */
+        ->and($summary->started_at)->toBeNull()
         /* And it is no longer a candidate for the command that would have killed it. */
         ->and(Summary::query()->stalled()->count())->toBe(0);
+});
+
+test('a video somebody is already working on is joined rather than restarted', function (): void {
+    Queue::fake();
+
+    $claimedAt = Date::now()->subMinutes(2);
+    $summary = Summary::factory()->processing()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'started_at' => $claimedAt,
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    /* Untouched: the work is under way and this request is simply watching it. */
+    expect($summary->fresh()?->started_at?->timestamp)->toBe($claimedAt->timestamp);
 });
 
 test('a brand new submission starts its clock straight away', function (): void {
@@ -279,6 +306,29 @@ test('the page is told when the summary was asked for', function (): void {
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
             ->component('home')
             ->where('summary.requestedAt', $summary->requested_at->toIso8601String()),
+        );
+});
+
+/*
+ * Queued and processing are the same status on this side, so whether a worker has started is
+ * the only thing that tells them apart, and the page needs it to say which.
+ */
+test('the page is told whether a worker has started', function (): void {
+    $waiting = Summary::factory()->pending()->create();
+    $working = Summary::factory()->processing()->create();
+
+    $user = User::factory()->create();
+
+    $this->actingAs($user)
+        ->get(route('summaries.show', $waiting))
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->where('summary.startedAt', null),
+        );
+
+    $this->actingAs($user)
+        ->get(route('summaries.show', $working))
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->where('summary.startedAt', $working->started_at?->toIso8601String()),
         );
 });
 

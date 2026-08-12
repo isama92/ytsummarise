@@ -30,8 +30,9 @@ use Override;
  * @property string|null $title
  * @property string|null $body
  * @property CarbonImmutable $requested_at
+ * @property CarbonImmutable|null $started_at
  */
-#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at'])]
+#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at', 'started_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -76,11 +77,16 @@ class Summary extends Model
         return [
             'status' => SummaryStatus::class,
             'requested_at' => 'immutable_datetime',
+            'started_at' => 'immutable_datetime',
         ];
     }
 
     /**
-     * The moment before which a summary still pending has been waiting too long.
+     * The moment before which a worker that started has been at it too long.
+     *
+     * Compared against started_at and never against requested_at: the timeout is a budget
+     * for doing the work, and a job can sit in a queue for as long as the jobs ahead of it
+     * take. Comparing it to when somebody asked wrote summaries off mid-flight.
      *
      * CarbonInterface rather than CarbonImmutable because the concrete class is whatever
      * Date::use() was given in AppServiceProvider, and the facade is typed for the
@@ -92,10 +98,10 @@ class Summary extends Model
     }
 
     /**
-     * Summaries that have been pending longer than a video is given.
+     * Summaries a worker began and did not finish.
      *
-     * The job may have been killed, never reserved, or lost with the queue it sat in;
-     * from here they look the same and all end up written off the same way.
+     * Its own timeout should have killed it and failed the row, so anything here lost its
+     * worker outright - killed rather than stopped. These are written off.
      *
      * @param  Builder<Summary>  $query
      */
@@ -103,19 +109,38 @@ class Summary extends Model
     protected function stalled(Builder $query): void
     {
         $query->where('status', SummaryStatus::Pending)
-            ->where('requested_at', '<=', self::stalledBefore());
+            ->whereNotNull('started_at')
+            ->where('started_at', '<=', self::stalledBefore());
     }
 
     /**
-     * Whether this row in particular has been waiting too long.
+     * Summaries no worker has started.
      *
-     * Shares its horizon with the scope above on purpose: the controller has to agree
-     * with the expiry command about what stalled means, or one of them starts a new
-     * attempt that the other writes off a minute later.
+     * Ordinary for as long as a job is queued, and indistinguishable from a job that no
+     * longer exists - flushed with its queue, or dropped because the uniqueness lock was
+     * still held by a job that had already died. Rather than guess which, the recovery
+     * command queues these again: with the claim in place a duplicate dispatch is harmless,
+     * so nothing is lost by being wrong about it.
+     *
+     * @param  Builder<Summary>  $query
+     */
+    #[Scope]
+    protected function unclaimed(Builder $query): void
+    {
+        $query->where('status', SummaryStatus::Pending)
+            ->whereNull('started_at');
+    }
+
+    /**
+     * Whether the worker on this row in particular has gone.
+     *
+     * Shares its horizon with the stalled scope on purpose: the controller has to agree
+     * with the recovery command, or one starts an attempt the other writes off.
      */
     public function isStalled(): bool
     {
         return $this->status === SummaryStatus::Pending
-            && $this->requested_at <= self::stalledBefore();
+            && $this->started_at !== null
+            && $this->started_at <= self::stalledBefore();
     }
 }

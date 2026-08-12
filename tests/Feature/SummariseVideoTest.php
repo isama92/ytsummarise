@@ -6,6 +6,7 @@ use App\Enums\SummaryStatus;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use Carbon\CarbonInterval;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 
@@ -19,7 +20,50 @@ test('the job writes a summary and marks it ready', function (): void {
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->body)->not->toBeEmpty();
+        ->and($summary->body)->not->toBeEmpty()
+        /* And records when it began, which is what the timeout is measured against. */
+        ->and($summary->started_at)->not->toBeNull();
+});
+
+/*
+ * The guarantee, and the reason it is a conditional update rather than a lock: two jobs for
+ * the same video can exist however carefully the lock is sized, because its TTL starts when a
+ * job is dispatched and a job that waited in a queue can outlive it. Only one of them may
+ * pay for the model call.
+ */
+test('a second job for a video somebody is already working on does nothing', function (): void {
+    Sleep::fake();
+
+    $claimedAt = Date::now()->subMinute();
+    $summary = Summary::factory()->processing()->create(['started_at' => $claimedAt]);
+
+    (new SummariseVideo($summary))->handle();
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->body)->toBeNull()
+        /* Not re-stamped either: the claim belongs to whoever took it. */
+        ->and($summary->started_at?->timestamp)->toBe($claimedAt->timestamp);
+
+    Sleep::assertNeverSlept();
+});
+
+test('the first of two jobs wins and the second leaves it alone', function (): void {
+    Sleep::fake();
+
+    $summary = Summary::factory()->pending()->create();
+
+    (new SummariseVideo($summary))->handle();
+
+    $body = $summary->fresh()?->body;
+
+    (new SummariseVideo($summary))->handle();
+
+    expect($summary->fresh()?->body)->toBe($body);
+
+    /* One sleep, so one summary was paid for. */
+    Sleep::assertSleptTimes(1);
 });
 
 test('the job stands in for the latency of the model call', function (): void {

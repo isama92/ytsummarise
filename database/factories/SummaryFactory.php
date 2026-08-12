@@ -32,27 +32,44 @@ class SummaryFactory extends Factory
             'title' => rtrim(fake()->sentence(5), '.'),
             'body' => fake()->paragraphs(3, true),
             'requested_at' => Date::now(),
+
+            /* A finished summary was necessarily claimed by the worker that finished it. */
+            'started_at' => Date::now(),
         ];
     }
 
     /**
-     * A summary whose job stopped existing without failing.
-     */
-    public function stalled(): static
-    {
-        return $this->pending()->state(fn (): array => [
-            'requested_at' => Date::now()->subSeconds(config()->integer('summaries.timeout') + 1),
-        ]);
-    }
-
-    /**
-     * A summary whose job has not run yet.
+     * A summary waiting its turn in the queue, which no worker has claimed.
      */
     public function pending(): static
     {
         return $this->state(fn (): array => [
             'status' => SummaryStatus::Pending,
             'body' => null,
+            'started_at' => null,
+        ]);
+    }
+
+    /**
+     * A summary a worker claimed and is still working on.
+     */
+    public function processing(): static
+    {
+        return $this->pending()->state(fn (): array => [
+            'started_at' => Date::now(),
+        ]);
+    }
+
+    /**
+     * A summary a worker claimed and then abandoned, having been killed mid job.
+     *
+     * The age is on started_at, not requested_at: the timeout is a budget for doing the
+     * work, so how long ago somebody asked says nothing about whether a worker has gone.
+     */
+    public function stalled(): static
+    {
+        return $this->pending()->state(fn (): array => [
+            'started_at' => Date::now()->subSeconds(config()->integer('summaries.timeout') + 1),
         ]);
     }
 
