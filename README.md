@@ -35,4 +35,7 @@ repository, and `docker rmi ytsummarise-coverage` removes the image again.
 ## TODO
 - add redis to manage queues, session
 - add horizon
+- associate summaries with users
+- add list of requested videos with the status
+- notify by email/ntfy when ready (if user wants to, toggle in profile)
 
