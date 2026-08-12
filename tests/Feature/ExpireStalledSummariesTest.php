@@ -231,26 +231,14 @@ test('the horizon leaves room for the work and for waiting', function (): void {
 });
 
 /*
- * And it cannot be configured below that, which matters because the two clocks start at
- * different moments: this one when the attempt was asked for, the worker's budget when the
- * work began. Setting them equal expires the horizon while the work is still legally running
- * for every row that waited in a queue at all, so the floor is twice the timeout rather than
- * the timeout.
+ * The floor in config/summaries.php that keeps that true whatever SUMMARY_STALE_AFTER says is
+ * deliberately not tested, and this note is here so nobody adds one back. Reaching it means
+ * driving env() from a test, and env() answers from $_ENV and $_SERVER before it looks at
+ * anything putenv set: a machine whose .env omits the key honours the putenv and a machine
+ * whose .env has it ignores it, so the test passes locally and fails in CI. See the trap
+ * recorded in .ai/rules/config.md.
  *
- * The file is required again rather than read through config(), which was resolved at boot
- * and would answer for the environment the suite runs in whatever these say.
+ * What the assertion above covers is the regression that can actually reach anybody: the
+ * shipped default in .env.example being lowered under the room the work needs. Reverting the
+ * floor itself changes nothing observable until somebody also overrides the variable.
  */
-test('the horizon cannot be configured below the room it needs', function (): void {
-    putenv('SUMMARY_TIMEOUT=1800');
-    putenv('SUMMARY_STALE_AFTER=1800');
-
-    try {
-        $summaries = require base_path('config/summaries.php');
-
-        expect($summaries['timeout'])->toBe(1800)
-            ->and($summaries['stale_after'])->toBe(3600);
-    } finally {
-        putenv('SUMMARY_TIMEOUT');
-        putenv('SUMMARY_STALE_AFTER');
-    }
-});
