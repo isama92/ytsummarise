@@ -260,22 +260,32 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * The language goes with it because nothing can recover it by looking at the text, and
          * without it a reused transcript could not be told whether it needs translating.
          */
-        Summary::query()
-            ->whereKey($this->summaryId)
-            ->update([
-                'transcript' => $transcript->text,
-                'transcript_language' => $transcript->language,
-            ]);
+        $summary->update([
+            'transcript' => $transcript->text,
+            'transcript_language' => $transcript->language,
+        ]);
 
         $outline = $summariseTranscript->execute($transcript);
 
         /*
-         * Written by id rather than through the instance loaded at the top, because that
-         * instance's idea of the row predates the work and Eloquent only writes what it
-         * believes has changed. summaries:expire can have stamped a reason on the row while
-         * this job was working, and clearing it through a model that never saw it set is a
-         * no-op: the assignment looks clean, the column is left as it was, and a ready summary
-         * keeps an explanation of why it failed.
+         * By key, and not $summary->update() like the write fifteen lines above it. The
+         * difference is 'error' => null, and it is not a style choice.
+         *
+         * Eloquent writes only what it believes has changed, and this instance last saw the row
+         * before the work started, when the error column was already null. Assigning null to it
+         * is therefore not a change, so Eloquent leaves the column out of the statement
+         * entirely. Meanwhile summaries:expire can have stamped a reason on the row while this
+         * job was legitimately working - its horizon is deliberately blunt - and the result is a
+         * ready summary that still says why it failed. The assignment looks clean and does
+         * nothing, which is the worst shape a bug can have.
+         *
+         * This form has no opinion about what the row used to hold: it writes every column named
+         * here, once, whatever anybody else did in between. The write above can be an ordinary
+         * model update because nothing else writes those two columns, so there is no value it
+         * could be asked to clear back to what it already believes.
+         *
+         * "a summary that finishes after being written off does not keep the reason" is the test
+         * that fails if this is simplified.
          */
         Summary::query()
             ->whereKey($this->summaryId)
@@ -290,12 +300,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
                 'title' => $video->title,
                 'outline' => $outline->toArray(),
 
-                /*
-                 * Cleared rather than left alone. summaries:expire can write a reason onto a row
-                 * this job is still legitimately working on - its horizon is deliberately blunt -
-                 * and a ready summary carrying an explanation of why it failed is a trap for
-                 * whatever reads the column next.
-                 */
+                /* Cleared rather than left alone, for the reason above. */
                 'error' => null,
             ]);
     }
