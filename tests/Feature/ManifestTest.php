@@ -24,6 +24,20 @@ test('the manifest is reachable by somebody signed in', function (): void {
 });
 
 /*
+ * The third state, and the one being outside both middleware groups does nothing for.
+ * AuthenticateAsFirstUser runs ahead of everything in the web group and sends every route
+ * but the setup form to it while authentication is off and no user exists yet - so a fresh
+ * self hosted install answered 302 here and was silently not installable.
+ */
+test('the manifest is reachable on a self hosted install with no user yet', function (): void {
+    config(['auth.enabled' => false]);
+
+    $this->get(route('manifest'))
+        ->assertOk()
+        ->assertHeader('content-type', 'application/manifest+json');
+});
+
+/*
  * name or short_name, icons at 192 and 512, start_url and display are what Chromium
  * documents as required to install. Everything else in the manifest only improves the
  * install sheet, so this asserts the floor rather than the whole file.

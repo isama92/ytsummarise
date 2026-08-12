@@ -157,15 +157,26 @@ export default function Home({ videoId, summary }: HomeProps) {
     };
 
     const pasteFromClipboard = async (): Promise<void> => {
+        let text: string;
+
+        /*
+         * Only the read is guarded. Wrapping the paste that follows meant a failure in
+         * there was reported as a refused clipboard and swallowed, so the field would
+         * quietly refocus and nothing would say why.
+         */
         try {
-            summarisePastedText(await navigator.clipboard.readText());
+            text = await navigator.clipboard.readText();
         } catch {
             /*
              * Refused, or a prompt the person dismissed. Nothing worth reporting:
              * leave them in the field they were about to use.
              */
             inputRef.current?.focus();
+
+            return;
         }
+
+        summarisePastedText(text);
     };
 
     const handlePaste = (event: ClipboardEvent<HTMLInputElement>): void => {
@@ -211,6 +222,16 @@ export default function Home({ videoId, summary }: HomeProps) {
                     const hasResult = processing || summary !== null;
                     const isWorking =
                         processing || summary?.status === 'pending';
+
+                    /*
+                     * While a submit is in flight the summary prop still describes the
+                     * previous attempt, so anything drawn from it would be about the wrong
+                     * video: a clock counting from when that one was asked for, under the
+                     * title of the video being replaced. The skeleton stands alone until
+                     * the redirect lands and says what is actually being summarised.
+                     */
+                    const describes = processing ? null : summary;
+
                     const message = isUnrecognised
                         ? 'That does not look like a YouTube link or video code.'
                         : errors.video_id;
@@ -343,14 +364,14 @@ export default function Home({ videoId, summary }: HomeProps) {
                                      * changes every second would be read out every
                                      * second. The busy state already says it is working.
                                      */}
-                                    {isWorking && summary !== null && (
+                                    {isWorking && describes !== null && (
                                         <p
                                             aria-hidden="true"
                                             className="text-sm text-muted-foreground tabular-nums"
                                             data-test="elapsed"
                                         >
                                             {elapsedSince(
-                                                summary.requestedAt,
+                                                describes.requestedAt,
                                                 now,
                                             )}
                                         </p>
@@ -362,12 +383,12 @@ export default function Home({ videoId, summary }: HomeProps) {
                                      * text. The page's only heading, and absent entirely
                                      * when the lookup could not tell us the title.
                                      */}
-                                    {summary?.title != null && (
+                                    {describes?.title != null && (
                                         <h1
                                             className="mt-1 text-xl font-medium text-balance"
                                             data-test="summary-title"
                                         >
-                                            {summary.title}
+                                            {describes.title}
                                         </h1>
                                     )}
 

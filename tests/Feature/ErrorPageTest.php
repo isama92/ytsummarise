@@ -50,6 +50,24 @@ test('the shared props the page needs survive a url that matches no route', func
         );
 });
 
+/*
+ * A missing image, a stray source map, a bot sweeping for php files: none of them wanted a
+ * page, and rendering one for them costs a React shell plus the database query and session
+ * write that come with sharing props.
+ */
+test('a request that did not ask for a page gets laravel own 404', function (string $accept): void {
+    $response = $this->actingAs(User::factory()->create())
+        ->get('/does-not-exist', ['Accept' => $accept]);
+
+    $response->assertNotFound();
+
+    expect($response->content())->not->toContain('"component":"error"');
+})->with([
+    'an image' => 'image/avif,image/webp,*/*;q=0.8',
+    'a stylesheet' => 'text/css,*/*;q=0.1',
+    'a script' => 'application/javascript',
+]);
+
 test('a status the application does not explain is left to laravel', function (): void {
     /*
      * 405 is not in HANDLED_STATUSES, so the callback returns null and Laravel renders it.

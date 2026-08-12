@@ -9,12 +9,16 @@ use App\Http\Controllers\SummaryController;
 use Illuminate\Support\Facades\Route;
 
 /*
- * In neither group below, which is the whole point of it being up here.
+ * In neither group below, which is most of the point of it being up here.
  *
  * Behind `auth` the browser's own request for the manifest answers 302 to /login, and the
  * application is quietly not installable with nothing to see in any log. Inside `guest`
- * the same thing happens the other way round to anybody signed in. It has to be reachable
- * in both states, and it says nothing about anybody, so it is reachable by everybody.
+ * the same thing happens the other way round to anybody signed in. It says nothing about
+ * anybody, so it is reachable by everybody.
+ *
+ * Being outside both is necessary and not sufficient: AuthenticateAsFirstUser runs in the
+ * web group ahead of all of this and had to be told about it separately, or a self hosted
+ * install with authentication off and no user yet answered 302 here too.
  */
 Route::get('manifest.webmanifest', ManifestController::class)->name('manifest');
 

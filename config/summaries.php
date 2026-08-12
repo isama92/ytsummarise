@@ -17,9 +17,10 @@ return [
     |   - the age at which a summary still pending is written off as failed, so
     |     a page waiting on a job that died stops waiting
     |
-    | DB_QUEUE_RETRY_AFTER in config/queue.php must stay larger than this. A
-    | retry_after below the timeout has the worker start a second copy of a job
-    | that is still running.
+    | Nothing to keep in step by hand: the `summaries` connection in
+    | config/queue.php derives its own retry_after from this value, because a
+    | retry_after below a job's timeout has the worker start a second copy of a
+    | job that is still running.
     |
     | Floored at a minute rather than trusted blindly: a zero here, from an
     | empty or unparseable value, would expire every summary the instant it was

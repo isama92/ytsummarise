@@ -31,6 +31,9 @@
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value=":memory:"/>
         <env name="DB_URL" value=""/>
+        <!-- Pinned because SummariseVideoTest asserts the default connection is left at
+             Laravel's 90. Unset, a developer's own .env would flow into that assertion. -->
+        <env name="DB_QUEUE_RETRY_AFTER" value="90"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

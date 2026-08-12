@@ -86,6 +86,21 @@ class AppServiceProvider extends ServiceProvider
                 return null;
             }
 
+            /*
+             * And only for something that actually asked for a page. Every 404 was
+             * rendering a React shell and running share() - a database query and a session
+             * write - for a missing icon, a stray source map request or a bot sweeping for
+             * /wp-login.php.
+             *
+             * text/html by name rather than acceptsHtml(), which is satisfied by a wildcard
+             * and so was true of every one of those: a browser fetching an image asks for
+             * avif and webp and then a wildcard, and a bot usually sends nothing but one.
+             * A navigation always names text/html, and so does an Inertia visit.
+             */
+            if (! in_array('text/html', $response->request->getAcceptableContentTypes(), true)) {
+                return null;
+            }
+
             return $response
                 ->render('error', ['status' => $response->statusCode()])
                 ->withSharedData();
