@@ -192,4 +192,15 @@ Use Wayfinder to generate TypeScript functions for Laravel routes. Import from `
 
 - IMPORTANT: Activate `inertia-react-development` when working with Inertia React client-side patterns.
 
+=== saloonphp/laravel-plugin/core rules ===
+
+## SaloonPHP
+
+- PHP library for building API integrations and SDKs.
+- Documentation: https://docs.saloon.dev
+- Check `composer.json` for version (v2, v3 or v4). Use `web-search` tool for latest docs before implementing.
+- If the project uses v3, inform the user that v3 is affected by three published security issues and prefer upgrading to v4 before adding new Saloon work, unless the user explicitly needs a v3-compatible change.
+- Always use Artisan commands to generate SaloonPHP classes: `php artisan saloon:connector`, `php artisan saloon:request`, `php artisan saloon:response`, `php artisan php artisan saloon:plugin`, `php artisan saloon:auth`.- Documentation: `https://docs.saloon.dev`
+- IMPORTANT: Activate saloon-development skill when working with SaloonPHP-related tasks.
+
 </laravel-boost-guidelines>
