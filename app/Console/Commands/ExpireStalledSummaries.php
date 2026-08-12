@@ -40,7 +40,7 @@ class ExpireStalledSummaries extends Command
      */
     public function handle(): void
     {
-        $rows = Summary::query()->stale();
+        $rows = Summary::stale();
 
         $videoIds = $rows->pluck('video_id', 'id');
 

@@ -39,7 +39,7 @@ class AuthenticateAsFirstUser
             return $next($request);
         }
 
-        $user = User::query()->oldest('id')->first();
+        $user = User::oldest('id')->first();
 
         if (! $user instanceof User) {
             return redirect()->route('first-user.create');

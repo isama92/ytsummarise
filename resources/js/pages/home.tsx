@@ -20,7 +20,7 @@ import { elapsedSince } from '@/lib/elapsed';
 import { errorKeyOf, stageKeyOf } from '@/lib/summary';
 import { cn } from '@/lib/utils';
 import { extractVideoId } from '@/lib/youtube';
-import type { Summary } from '@/types';
+import type { Summary, SummarySections } from '@/types';
 
 type HomeProps = {
     videoId: string | null;
@@ -172,6 +172,75 @@ function SummaryPoll() {
     usePoll(2000, { only: ['summary'] });
 
     return null;
+}
+
+/**
+ * One language's worth of summary: the sentence, then the two lists.
+ *
+ * Every heading is an h3, including the "In English" divider above a translated version, so a
+ * summary that has been translated reads as one flat run of sections rather than as two nested
+ * ones. Nesting would be more precise, but the outer heading it needs does not exist: there is
+ * a name for the English version and none for the original, because the only thing known about
+ * that language is its subtag.
+ *
+ * The lists are rendered only when they have something in them. A model that returns nine points
+ * instead of ten has written a usable summary, and one that returns none of them should leave a
+ * heading out rather than stand one over nothing.
+ */
+function SummarySection({
+    heading,
+    children,
+}: {
+    heading: string;
+    children: React.ReactNode;
+}) {
+    return (
+        <section>
+            <h3 className="mb-2 text-sm font-medium tracking-wide text-muted-foreground uppercase">
+                {heading}
+            </h3>
+
+            {children}
+        </section>
+    );
+}
+
+function SummaryLines({ lines }: { lines: string[] }) {
+    return (
+        <ul className="list-outside list-disc space-y-1.5 pl-5">
+            {lines.map((line, index) => (
+                // Keyed by position: the list never reorders, and two identical
+                // lines would collide on content.
+                <li key={index} className="leading-relaxed">
+                    {line}
+                </li>
+            ))}
+        </ul>
+    );
+}
+
+function SummaryVersion({ sections }: { sections: SummarySections }) {
+    const t = useTranslate();
+
+    return (
+        <div className="space-y-6">
+            <SummarySection heading={t('summaries.sections.headline')}>
+                <p className="leading-relaxed">{sections.headline}</p>
+            </SummarySection>
+
+            {sections.points.length > 0 && (
+                <SummarySection heading={t('summaries.sections.points')}>
+                    <SummaryLines lines={sections.points} />
+                </SummarySection>
+            )}
+
+            {sections.takeaways.length > 0 && (
+                <SummarySection heading={t('summaries.sections.takeaways')}>
+                    <SummaryLines lines={sections.takeaways} />
+                </SummarySection>
+            )}
+        </div>
+    );
 }
 
 export default function Home({ videoId, summary }: HomeProps) {
@@ -543,27 +612,52 @@ export default function Home({ videoId, summary }: HomeProps) {
                                                     </h2>
                                                 )}
 
-                                                <div className="space-y-4">
-                                                    {summary.body
-                                                        ?.split('\n\n')
-                                                        .map(
-                                                            (
-                                                                paragraph,
-                                                                index,
-                                                            ) => (
-                                                                <p
-                                                                    // Keyed by position: the
-                                                                    // list never reorders, and
-                                                                    // two identical paragraphs
-                                                                    // would collide on content.
-                                                                    key={index}
-                                                                    className="leading-relaxed"
-                                                                >
-                                                                    {paragraph}
-                                                                </p>
-                                                            ),
+                                                {summary.outline && (
+                                                    <div className="space-y-8">
+                                                        <SummaryVersion
+                                                            sections={
+                                                                summary.outline
+                                                                    .original
+                                                            }
+                                                        />
+
+                                                        {/*
+                                                         * Only for a video that was not in
+                                                         * English, which is why it is a real
+                                                         * null on the server rather than a
+                                                         * copy of the version above: showing
+                                                         * the same summary twice is what
+                                                         * filling it in would mean.
+                                                         *
+                                                         * Below the original rather than
+                                                         * above it. The words were said in
+                                                         * that language, so that is the
+                                                         * summary of what was actually said;
+                                                         * this one is a step further away.
+                                                         */}
+                                                        {summary.outline
+                                                            .english && (
+                                                            <div
+                                                                className="space-y-6 border-t pt-8"
+                                                                data-test="summary-english"
+                                                            >
+                                                                <h3 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">
+                                                                    {t(
+                                                                        'summaries.translation',
+                                                                    )}
+                                                                </h3>
+
+                                                                <SummaryVersion
+                                                                    sections={
+                                                                        summary
+                                                                            .outline
+                                                                            .english
+                                                                    }
+                                                                />
+                                                            </div>
                                                         )}
-                                                </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
 

@@ -10,7 +10,39 @@ export type SummaryStatus = 'pending' | 'ready' | 'failed';
  * lets a reason from the database become a sentence without a lookup table in between.
  */
 export type SummaryError =
-    'not_found' | 'unreachable' | 'timed_out' | 'unknown';
+    | 'not_found'
+    | 'unreachable'
+    | 'no_transcript'
+    | 'unavailable'
+    | 'timed_out'
+    | 'unknown';
+
+/**
+ * Mirrors App\Services\Ai\Data\SummarySections: one language's worth of summary.
+ *
+ * The lists are filtered server-side before they are stored, so every entry is a non-empty
+ * string, but neither is guaranteed to have the length the agent was asked for - a model that
+ * returns nine points has still written a usable summary.
+ */
+export type SummarySections = {
+    headline: string;
+    points: string[];
+    takeaways: string[];
+};
+
+/**
+ * Mirrors App\Services\Ai\Data\SummaryOutline: everything written about one video.
+ *
+ * `english` is null for a video that was in English already, which is the ordinary case. It is
+ * a real absence rather than a copy of `original`, so whether there is a second version to show
+ * is answered by asking whether this is there.
+ */
+export type SummaryOutline = {
+    /** The primary subtag of the language the video was in: `en`, `nl`, `pt`. */
+    language: string;
+    original: SummarySections;
+    english: SummarySections | null;
+};
 
 export type Summary = {
     status: SummaryStatus;
@@ -23,8 +55,13 @@ export type Summary = {
      */
     title: string | null;
 
-    /** Null until the job has written one. */
-    body: string | null;
+    /**
+     * The summary itself, or null until the job has written one.
+     *
+     * The transcript it was made from is deliberately not sent: it is the raw material rather
+     * than the answer, and it would travel with every poll while the page waits.
+     */
+    outline: SummaryOutline | null;
 
     /**
      * Why the attempt failed, and null for every attempt that has not.

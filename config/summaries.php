@@ -2,6 +2,16 @@
 
 $timeout = max(60, (int) env('SUMMARY_TIMEOUT', 1800));
 
+/*
+ * Both of the budgets below are capped at the job's own, because neither of them is allowed
+ * to be the reason a worker kills the job. Whichever runs long should give up and be recorded
+ * as a reason somebody can read, rather than leaving the worker to stop the job mid-write and
+ * the failure handler to guess at "unknown".
+ */
+$modelTimeout = min($timeout, max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600)));
+
+$transcriptTimeout = min($timeout, max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120)));
+
 return [
 
     /*
@@ -77,5 +87,56 @@ return [
     */
 
     'stale_after' => max($timeout * 2, (int) env('SUMMARY_STALE_AFTER', 21600)),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Model Timeout
+    |--------------------------------------------------------------------------
+    |
+    | How long one prompt gets, in seconds. Three of them run for a video in a
+    | language that is not English, so this is not the budget for the whole job:
+    | summaries.timeout above is.
+    |
+    | It has to be set at all because the SDK's own default is sixty seconds,
+    | which is fine for a hosted model answering a short question and nowhere
+    | near enough for a local one working through an hour of transcript. The
+    | value is passed at prompt time rather than declared with the #[Timeout]
+    | attribute, which takes a literal and cannot read configuration.
+    |
+    | Ten minutes by default, which is slow for a hosted provider and unhurried
+    | for a model on somebody's own hardware. Floored at thirty seconds so an
+    | unparseable value cannot leave a prompt no time to answer in, and capped at
+    | the job's timeout so it can never be the thing still waiting when the
+    | worker gives up.
+    |
+    */
+
+    'model_timeout' => $modelTimeout,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Transcript
+    |--------------------------------------------------------------------------
+    |
+    | Where yt-dlp is and how long it gets. The binary is looked up on PATH by
+    | default, which is what a development machine wants; a queue worker running
+    | somewhere without one takes an absolute path here.
+    |
+    | The timeout covers asking yt-dlp about a video and fetching the caption
+    | track it names, separately rather than between them, so a slow answer to
+    | one does not spend the other's budget. Neither should be anywhere near it:
+    | both are small requests, and the ceiling is there for a yt-dlp that has
+    | hung rather than as a target.
+    |
+    | Capped at the job's timeout for the same reason as the model budget above:
+    | a transcript that never arrives should fail as a transcript that never
+    | arrived, not as a worker killing the job.
+    |
+    */
+
+    'transcript' => [
+        'binary' => env('YT_DLP_BINARY', 'yt-dlp'),
+        'timeout' => $transcriptTimeout,
+    ],
 
 ];

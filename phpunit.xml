@@ -56,5 +56,27 @@
              working fails a test rather than quietly running against somebody's real key. -->
         <server name="YOUTUBE_API_KEY" value="test-api-key"/>
         <env name="YOUTUBE_API_KEY" value="test-api-key" force="true"/>
+        <!-- The same care for the same reason. A developer with a working provider in their
+             own .env would otherwise have the suite resolve it, and the AI SDK reads its
+             credentials when a provider is first resolved rather than when a prompt is sent -
+             so a missing fake would not fail loudly, it would quietly configure the real
+             thing and wait for something to leak past a fake.
+
+             Nothing here is ever sent: every test fakes the agents. These exist so that what
+             is configured during a test run is unambiguously not anybody's endpoint, and so
+             CheckAiProviderTest has known values to assert it reports. -->
+        <server name="AI_PROVIDER" value="openai-compatible"/>
+        <env name="AI_PROVIDER" value="openai-compatible" force="true"/>
+        <server name="OPENAI_COMPATIBLE_URL" value="https://ai.test/api"/>
+        <env name="OPENAI_COMPATIBLE_URL" value="https://ai.test/api" force="true"/>
+        <server name="OPENAI_COMPATIBLE_API_KEY" value="test-ai-key"/>
+        <env name="OPENAI_COMPATIBLE_API_KEY" value="test-ai-key" force="true"/>
+        <server name="OPENAI_COMPATIBLE_MODEL" value="test-model"/>
+        <env name="OPENAI_COMPATIBLE_MODEL" value="test-model" force="true"/>
+        <!-- Pinned so no test can reach a real binary. FetchTranscript fakes the process, and
+             a name that is obviously not yt-dlp turns a forgotten fake into a failure that
+             says so rather than into a real call to YouTube from CI. -->
+        <server name="YT_DLP_BINARY" value="test-yt-dlp"/>
+        <env name="YT_DLP_BINARY" value="test-yt-dlp" force="true"/>
     </php>
 </phpunit>

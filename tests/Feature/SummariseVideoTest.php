@@ -6,20 +6,31 @@ use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
+use App\Services\Ai\Agents\CreateSummary;
+use App\Services\Ai\Agents\ExtractIdeas;
+use App\Services\Ai\Agents\TranslateSummary;
 use App\Services\YouTube\Requests\OembedRequest;
-use Carbon\CarbonInterval;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Sleep;
+use Illuminate\Support\Facades\Process;
 use Saloon\Http\Faking\MockResponse;
 use Saloon\Laravel\Facades\Saloon;
 
+/*
+ * A note on what stands in for "nothing was paid for", which used to be Sleep::assertNeverSlept().
+ *
+ * The work is now three real collaborators, so the tests about a job that must not do any of it
+ * fake none of them and assert on that directly. An unfaked agent resolves the configured
+ * provider and sends a real request, which the suite's Http guard turns into a failure naming the
+ * url - so reaching a prompt from one of those tests is loud rather than quiet.
+ */
+
 test('the job writes a summary and marks it ready', function (): void {
-    Sleep::fake();
-    fakeYouTube('Never Gonna Give You Up');
+    fakeSummarisableVideo('Never Gonna Give You Up');
 
     $summary = Summary::factory()->pending()->create();
 
@@ -28,7 +39,11 @@ test('the job writes a summary and marks it ready', function (): void {
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->body)->not->toBeEmpty()
+        ->and($summary->outline['original']['headline'])->toBe('The whole video in one sentence')
+        ->and($summary->outline['original']['points'])->toHaveCount(2)
+        ->and($summary->outline['language'])->toBe('en')
+        /* Nothing to translate, and a real absence rather than the same summary twice. */
+        ->and($summary->outline['english'])->toBeNull()
         /* The title arrives with the summary rather than ahead of it. */
         ->and($summary->title)->toBe('Never Gonna Give You Up')
         ->and($summary->error)->toBeNull()
@@ -36,13 +51,29 @@ test('the job writes a summary and marks it ready', function (): void {
         ->and($summary->started_at)->not->toBeNull();
 });
 
+test('a video in another language is summarised in it and translated', function (): void {
+    fakeSummarisableVideo(language: 'nl');
+
+    $summary = Summary::factory()->pending()->create();
+
+    work(new SummariseVideo($summary->id));
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Ready)
+        ->and($summary->outline['language'])->toBe('nl')
+        ->and($summary->outline['original']['headline'])->toBe('The whole video in one sentence')
+        ->and($summary->outline['english']['headline'])->toBe('The whole video in one English sentence')
+        ->and($summary->transcript_language)->toBe('nl');
+});
+
 /*
  * A video that does not exist, which is the whole point of looking one up: without this the
  * job cheerfully summarises eleven characters nobody can watch.
  */
 test('a video that does not exist is failed rather than summarised', function (): void {
-    Sleep::fake();
     Log::spy();
+    Process::fake();
 
     withoutYouTubeKey();
 
@@ -56,12 +87,15 @@ test('a video that does not exist is failed rather than summarised', function ()
 
     expect($summary->status)->toBe(SummaryStatus::Failed)
         ->and($summary->error)->toBe(SummaryError::NotFound)
-        ->and($summary->body)->toBeNull();
+        ->and($summary->outline)->toBeNull();
 
-    /* And nothing was paid for, which is why the lookup comes before the work. */
-    Sleep::assertNeverSlept();
-
-    Log::shouldHaveReceived('info')->once();
+    /*
+     * And nothing was spent, which is why the lookup comes first: no transcript fetched and no
+     * model asked. The agents are deliberately not faked, so a prompt would fail rather than
+     * pass unnoticed.
+     */
+    Process::assertNothingRan();
+    ExtractIdeas::assertNeverPrompted();
 });
 
 /*
@@ -69,8 +103,7 @@ test('a video that does not exist is failed rather than summarised', function ()
  * same as knowing it does not, and only one of the two is worth submitting again.
  */
 test('a video nobody could be asked about is failed as unreachable', function (): void {
-    Sleep::fake();
-    Log::spy();
+    Process::fake();
 
     withoutYouTubeKey();
 
@@ -84,9 +117,136 @@ test('a video nobody could be asked about is failed as unreachable', function ()
 
     expect($summary->status)->toBe(SummaryStatus::Failed)
         ->and($summary->error)->toBe(SummaryError::Unreachable)
-        ->and($summary->body)->toBeNull();
+        ->and($summary->outline)->toBeNull();
 
-    Sleep::assertNeverSlept();
+    Process::assertNothingRan();
+});
+
+/*
+ * The captions are what gets summarised, so a video without any has nothing to summarise however
+ * capable the model is. A permanent answer, and the message for it does not invite another go.
+ */
+test('a video with no subtitles is failed rather than summarised', function (): void {
+    Log::spy();
+    fakeYouTube();
+
+    Process::fake(fn () => Process::result((string) json_encode([
+        'language' => 'en',
+        'subtitles' => [],
+        'automatic_captions' => [],
+    ])));
+
+    $summary = Summary::factory()->pending()->create();
+
+    work(new SummariseVideo($summary->id));
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        ->and($summary->error)->toBe(SummaryError::NoTranscript)
+        ->and($summary->outline)->toBeNull()
+        ->and($summary->transcript)->toBeNull();
+
+    /* The second of the two cheap refusals: still nothing asked of a model. */
+    ExtractIdeas::assertNeverPrompted();
+});
+
+/*
+ * Told apart from having no subtitles for the same reason not_found is told apart from
+ * unreachable: one of them is worth another attempt and the other never is.
+ */
+test('a video whose subtitles could not be fetched is failed as unavailable', function (): void {
+    Log::spy();
+    fakeYouTube();
+    ytDlpFails();
+
+    $summary = Summary::factory()->pending()->create();
+
+    work(new SummariseVideo($summary->id));
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        ->and($summary->error)->toBe(SummaryError::Unavailable)
+        ->and($summary->outline)->toBeNull();
+
+    ExtractIdeas::assertNeverPrompted();
+});
+
+/*
+ * Written before the model is asked rather than with the summary, which is the whole reason for
+ * keeping it: the fetch and the model call fail independently, and a failure of the second kind
+ * should leave the words behind for the retry.
+ */
+test('the transcript is stored before the model is asked about it', function (): void {
+    fakeYouTube();
+    fakeTranscript('We are no strangers to love.');
+
+    ExtractIdeas::fake(function () use (&$storedMidway): string {
+        $storedMidway = Summary::sole()->transcript;
+
+        return 'An idea';
+    });
+
+    CreateSummary::fake(fn (): array => [
+        'headline' => 'A headline',
+        'points' => [],
+        'takeaways' => [],
+    ]);
+
+    work(new SummariseVideo(Summary::factory()->pending()->create()->id));
+
+    expect($storedMidway)->toBe('We are no strangers to love.');
+});
+
+/*
+ * The payoff for storing it. A retry after the model failed re-runs the model and nothing else:
+ * no second process, no second request to YouTube, and the new attempt reads exactly the words
+ * the failed one did rather than whatever the captions say today.
+ *
+ * The row is pending with a transcript on it, which is what SummaryController leaves behind when
+ * somebody submits a failed video again - it clears the outline and the reason and leaves the
+ * transcript alone.
+ */
+test('a retry after a failed model call does not fetch the transcript again', function (): void {
+    fakeYouTube();
+    fakeSummariser();
+    Process::fake();
+
+    $summary = Summary::factory()->pending()->create([
+        'transcript' => 'The words from the attempt before.',
+        'transcript_language' => 'nl',
+    ]);
+
+    work(new SummariseVideo($summary->id));
+
+    expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
+
+    Process::assertNothingRan();
+    Http::assertNothingSent();
+
+    /* And read as Dutch, so it is still translated rather than taken for English. */
+    ExtractIdeas::assertPrompted('The words from the attempt before.');
+    TranslateSummary::assertPrompted(fn (): bool => true);
+});
+
+/*
+ * Both columns or neither. A row holding a transcript without its language cannot be told whether
+ * it needs translating, so it is fetched again rather than guessed at.
+ */
+test('a transcript without its language is fetched again', function (): void {
+    fakeSummarisableVideo();
+
+    $summary = Summary::factory()->pending()->create([
+        'transcript' => 'The words from the attempt before.',
+        'transcript_language' => null,
+    ]);
+
+    work(new SummariseVideo($summary->id));
+
+    Process::assertRan(fn (): bool => true);
+
+    expect($summary->fresh()?->transcript)->toBe('We are no strangers to love.');
 });
 
 /*
@@ -94,11 +254,12 @@ test('a video nobody could be asked about is failed as unreachable', function ()
  * is missing rather than the summary.
  */
 test('a video the lookup will not name is still summarised', function (): void {
-    Sleep::fake();
-
     withoutYouTubeKey();
 
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 401)]);
+
+    fakeTranscript();
+    fakeSummariser();
 
     $summary = Summary::factory()->pending()->create();
 
@@ -107,7 +268,7 @@ test('a video the lookup will not name is still summarised', function (): void {
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->body)->not->toBeEmpty()
+        ->and($summary->outline)->not->toBeNull()
         ->and($summary->title)->toBeNull()
         ->and($summary->error)->toBeNull();
 });
@@ -119,25 +280,38 @@ test('a video the lookup will not name is still summarised', function (): void {
  * for anything that reads the column, starting with the page.
  */
 test('a summary that finishes after being written off does not keep the reason', function (): void {
-    Sleep::fake();
     fakeYouTube();
+    fakeTranscript();
 
     $summary = Summary::factory()->pending()->create();
 
-    /* Written off during the model call, which is the only moment this can happen in. */
-    Sleep::whenFakingSleep(function () use ($summary): void {
-        Summary::query()->whereKey($summary->getKey())->update([
-            'status' => SummaryStatus::Failed,
-            'error' => SummaryError::TimedOut,
-        ]);
+    /*
+     * Written off during the model call. The faked agent is the seam for that now - it is called
+     * while the job is part way through, which is the only moment this can happen in.
+     */
+    ExtractIdeas::fake(function () use ($summary): string {
+        Summary::query()
+            ->whereKey($summary->getKey())
+            ->update([
+                'status' => SummaryStatus::Failed,
+                'error' => SummaryError::TimedOut,
+            ]);
+
+        return 'An idea';
     });
+
+    CreateSummary::fake(fn (): array => [
+        'headline' => 'A headline',
+        'points' => [],
+        'takeaways' => [],
+    ]);
 
     work(new SummariseVideo($summary->id));
 
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->body)->not->toBeEmpty()
+        ->and($summary->outline)->not->toBeNull()
         ->and($summary->error)->toBeNull();
 });
 
@@ -148,26 +322,26 @@ test('a summary that finishes after being written off does not keep the reason',
  * pay for the model call.
  */
 test('a second job for a video somebody is already working on does nothing', function (): void {
-    Sleep::fake();
+    Process::fake();
 
     $claimedAt = Date::now()->subMinute();
     $summary = Summary::factory()->processing()->create(['started_at' => $claimedAt]);
 
     /*
-     * No YouTube is faked on purpose. A job that bounces off the claim must not have looked
-     * anything up, and the suite's stray request guard is what says so: reaching the lookup
-     * from here throws rather than passing quietly.
+     * Nothing else is faked on purpose. A job that bounces off the claim must not have looked
+     * anything up, fetched anything or prompted anything, and the suite's stray request guards
+     * are what say so: reaching any of them from here throws rather than passing quietly.
      */
     work(new SummariseVideo($summary->id));
 
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Pending)
-        ->and($summary->body)->toBeNull()
+        ->and($summary->outline)->toBeNull()
         /* Not re-stamped either: the claim belongs to whoever took it. */
         ->and($summary->started_at?->timestamp)->toBe($claimedAt->timestamp);
 
-    Sleep::assertNeverSlept();
+    Process::assertNothingRan();
 });
 
 /*
@@ -175,13 +349,13 @@ test('a second job for a video somebody is already working on does nothing', fun
  *
  * The overlap is the whole test and has to be arranged deliberately. Run one after the other,
  * the row is already ready by the time the second loads it, so it stops at the status guard
- * and never reaches the claim at all - which is how the previous two versions of this test
- * both managed to pass with the claim deleted outright. Running the second inside the first's
- * model call is the only arrangement where the claim is what answers.
+ * and never reaches the claim at all - which is how two earlier versions of this test both
+ * managed to pass with the claim deleted outright. Running the second inside the first's model
+ * call is the only arrangement where the claim is what answers.
  */
 test('the first of two jobs pays and the second does not', function (): void {
-    Sleep::fake();
     fakeYouTube();
+    fakeTranscript();
 
     $summary = Summary::factory()->pending()->create();
 
@@ -189,30 +363,37 @@ test('the first of two jobs pays and the second does not', function (): void {
     $second = new SummariseVideo($summary->id);
 
     /*
-     * Once, or a second job that got past the claim would sleep, re-enter here and recurse
+     * Once, or a second job that got past the claim would prompt, re-enter here and recurse
      * rather than failing. The guard costs nothing when the claim works, because the second
-     * job returns without sleeping and this never fires twice anyway.
+     * job returns without prompting and this never fires twice anyway.
      */
     $overlapped = false;
+    $prompts = 0;
 
-    Sleep::whenFakingSleep(function () use ($second, &$overlapped): void {
-        if ($overlapped) {
-            return;
+    ExtractIdeas::fake(function () use ($second, &$overlapped, &$prompts): string {
+        $prompts++;
+
+        if (! $overlapped) {
+            $overlapped = true;
+
+            work($second);
         }
 
-        $overlapped = true;
-
-        work($second);
+        return 'An idea';
     });
+
+    CreateSummary::fake(fn (): array => [
+        'headline' => 'A headline',
+        'points' => [],
+        'takeaways' => [],
+    ]);
 
     work($first);
 
-    /* One sleep stands for one model call, so one summary was paid for. */
-    expect($overlapped)->toBeTrue();
-
-    Sleep::assertSleptTimes(1);
-
-    expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
+    /* One pass through the model stands for one summary paid for. */
+    expect($overlapped)->toBeTrue()
+        ->and($prompts)->toBe(1)
+        ->and($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
 });
 
 /*
@@ -223,21 +404,21 @@ test('the first of two jobs pays and the second does not', function (): void {
  * rather than paying for a summary the page has already offered to try again.
  */
 test('a job whose attempt was given up on does nothing', function (): void {
-    Sleep::fake();
+    Process::fake();
 
     /* As summaries:expire leaves a row nothing ever started: failed, and never claimed. */
-    $summary = Summary::factory()->failed()->create(['started_at' => null]);
+    $summary = Summary::factory()->failed()->create(['started_at' => null, 'transcript' => null]);
 
     work(new SummariseVideo($summary->id));
 
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Failed)
-        ->and($summary->body)->toBeNull()
+        ->and($summary->outline)->toBeNull()
         /* And not claimed on the way past, which would make the retry unworkable. */
         ->and($summary->started_at)->toBeNull();
 
-    Sleep::assertNeverSlept();
+    Process::assertNothingRan();
 });
 
 /*
@@ -246,7 +427,7 @@ test('a job whose attempt was given up on does nothing', function (): void {
  * in between, and claiming it then pays for a summary the page has already offered to retry.
  */
 test('a job whose attempt is given up on while it reads the row does not claim it', function (): void {
-    Sleep::fake();
+    Process::fake();
 
     $summary = Summary::factory()->pending()->create();
     $raced = false;
@@ -263,9 +444,11 @@ test('a job whose attempt is given up on while it reads the row does not claim i
 
         $raced = true;
 
-        Summary::query()->whereKey($summary->getKey())->update([
-            'status' => SummaryStatus::Failed,
-        ]);
+        Summary::query()
+            ->whereKey($summary->getKey())
+            ->update([
+                'status' => SummaryStatus::Failed,
+            ]);
     });
 
     work(new SummariseVideo($summary->id));
@@ -277,18 +460,7 @@ test('a job whose attempt is given up on while it reads the row does not claim i
         /* Not claimed on the way past, which would make the retry unworkable. */
         ->and($summary->started_at)->toBeNull();
 
-    Sleep::assertNeverSlept();
-});
-
-test('the job stands in for the latency of the model call', function (): void {
-    Sleep::fake();
-    fakeYouTube();
-
-    work(new SummariseVideo(Summary::factory()->pending()->create()->id));
-
-    Sleep::assertSlept(
-        fn (CarbonInterval $duration): bool => (int) $duration->totalSeconds === 3,
-    );
+    Process::assertNothingRan();
 });
 
 test('a job that gives up records the failure, so the page stops waiting', function (): void {
@@ -296,12 +468,12 @@ test('a job that gives up records the failure, so the page stops waiting', funct
 
     $summary = Summary::factory()->pending()->create();
 
-    (new SummariseVideo($summary->id))->failed(new RuntimeException('no transcript'));
+    (new SummariseVideo($summary->id))->failed(new RuntimeException('the model refused'));
 
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Failed)
-        ->and($summary->body)->toBeNull()
+        ->and($summary->outline)->toBeNull()
         /*
          * Unknown rather than anything more specific. Whatever threw is in the log; what the
          * page needs is a sentence, and guessing a better one from an exception message would
@@ -313,6 +485,27 @@ test('a job that gives up records the failure, so the page stops waiting', funct
 });
 
 /*
+ * The transcript survives a failure at the model, which is what makes the retry cheap. Clearing
+ * it here alongside the outline would throw away the only reason for storing it.
+ */
+test('a failure at the model keeps the transcript for the retry', function (): void {
+    Log::spy();
+
+    $summary = Summary::factory()->processing()->create([
+        'transcript' => 'The words this attempt read.',
+        'transcript_language' => 'en',
+    ]);
+
+    (new SummariseVideo($summary->id))->failed(new RuntimeException('the model refused'));
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        ->and($summary->transcript)->toBe('The words this attempt read.')
+        ->and($summary->transcript_language)->toBe('en');
+});
+
+/*
  * The first explanation wins. A row written off by summaries:expire and then thrown on by the
  * job it was waiting for is still, most usefully, a row that took too long.
  */
@@ -321,7 +514,7 @@ test('a failure does not overwrite a reason the row already had', function (): v
 
     $summary = Summary::factory()->failed()->create(['error' => SummaryError::TimedOut]);
 
-    (new SummariseVideo($summary->id))->failed(new RuntimeException('no transcript'));
+    (new SummariseVideo($summary->id))->failed(new RuntimeException('the model refused'));
 
     expect($summary->fresh()?->error)->toBe(SummaryError::TimedOut);
 
@@ -336,14 +529,15 @@ test('a failure does not overwrite a reason the row already had', function (): v
 test('a late failure does not throw away a summary that already finished', function (): void {
     Log::spy();
 
-    $summary = Summary::factory()->create(['body' => 'The finished summary.']);
+    $summary = Summary::factory()->create();
+    $outline = $summary->outline;
 
     (new SummariseVideo($summary->id))->failed(new RuntimeException('worker died after writing'));
 
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->body)->toBe('The finished summary.');
+        ->and($summary->outline)->toBe($outline);
 
     Log::shouldHaveReceived('error')->once();
 });
@@ -371,6 +565,18 @@ test('the queue cannot reserve the job again while it is still running', functio
 });
 
 /*
+ * The budgets inside the job have to fit inside the job's own, or the thing that gives up first
+ * is the worker - which stops the job mid-write and leaves the failure handler guessing at
+ * "unknown" instead of a reason somebody can act on.
+ */
+test('no single step may outlast the job that runs it', function (): void {
+    $timeout = config()->integer('summaries.timeout');
+
+    expect(config()->integer('summaries.model_timeout'))->toBeLessThanOrEqual($timeout)
+        ->and(config()->integer('summaries.transcript.timeout'))->toBeLessThanOrEqual($timeout);
+});
+
+/*
  * One attempt is what keeps the lock, the timeout and the expiry horizon equal. More
  * attempts and the worst case life of a job is tries × timeout plus backoff, which
  * outlasts the lock, and a submission in that window queues a second paid summary of the
@@ -390,15 +596,16 @@ test('the uniqueness lock lasts exactly as long as the one attempt it guards', f
  * already reading.
  */
 test('a job delivered twice does not summarise twice', function (): void {
-    Sleep::fake();
+    Process::fake();
 
-    $summary = Summary::factory()->create(['body' => 'The finished summary.']);
+    $summary = Summary::factory()->create();
+    $outline = $summary->outline;
 
     work(new SummariseVideo($summary->id));
 
-    expect($summary->fresh()?->body)->toBe('The finished summary.');
+    expect($summary->fresh()?->outline)->toBe($outline);
 
-    Sleep::assertNeverSlept();
+    Process::assertNothingRan();
 });
 
 /*

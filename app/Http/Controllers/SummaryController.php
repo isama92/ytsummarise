@@ -45,7 +45,7 @@ class SummaryController extends Controller
     {
         $videoId = $request->string('video_id')->toString();
 
-        $summary = Summary::query()->firstOrCreate(
+        $summary = Summary::firstOrCreate(
             ['video_id' => $videoId],
             ['status' => SummaryStatus::Pending, 'requested_at' => Date::now()],
         );
@@ -84,7 +84,14 @@ class SummaryController extends Controller
         if ($summary->status === SummaryStatus::Failed) {
             $summary->update([
                 'status' => SummaryStatus::Pending,
-                'body' => null,
+                'outline' => null,
+
+                /*
+                 * The transcript stays. It belongs to the video rather than to the attempt, and
+                 * leaving it is what lets a retry after a failed model call skip yt-dlp
+                 * entirely and re-read exactly the words the failed attempt did. The job picks
+                 * it up if it is there; see SummariseVideo::transcriptFor().
+                 */
 
                 /*
                  * The reason goes with it, for the same reason the body does: it explains an
@@ -126,7 +133,21 @@ class SummaryController extends Controller
             'summary' => $summary instanceof Summary ? [
                 'status' => $summary->status,
                 'title' => $summary->title,
-                'body' => $summary->body,
+
+                /*
+                 * The summary itself: a language, the version written in it, and an English
+                 * translation of that where the language was not English already.
+                 *
+                 * Handed over as it is stored rather than rebuilt into a data object first. The
+                 * page is the only thing that reads it, it reads every part, and putting a
+                 * transformation in between would be one more place for the shape to disagree
+                 * with resources/js/types/summary.ts.
+                 *
+                 * The transcript is deliberately not here. It is the raw material rather than
+                 * the answer, it runs to tens of thousands of words, and every one of those
+                 * would travel with every poll while the page waits.
+                 */
+                'outline' => $summary->outline,
 
                 /*
                  * Why a failed attempt failed, as a code the page turns into a sentence of

@@ -29,12 +29,14 @@ use Override;
  * @property string $video_id
  * @property SummaryStatus $status
  * @property string|null $title
- * @property string|null $body
+ * @property string|null $transcript
+ * @property string|null $transcript_language
+ * @property array<string, mixed>|null $outline
  * @property SummaryError|null $error
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
  */
-#[Fillable(['video_id', 'status', 'title', 'body', 'error', 'requested_at', 'started_at'])]
+#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'outline', 'error', 'requested_at', 'started_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -79,6 +81,14 @@ class Summary extends Model
         return [
             'status' => SummaryStatus::class,
             'error' => SummaryError::class,
+
+            /*
+             * Cast to an array rather than to SummaryOutline, so that reading a row never
+             * depends on the shape the data object expects today. An outline written by an
+             * older release stays readable as what it is; SummaryOutline::from() is applied
+             * where one is being made, not where one is being read back.
+             */
+            'outline' => 'array',
             'requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
         ];

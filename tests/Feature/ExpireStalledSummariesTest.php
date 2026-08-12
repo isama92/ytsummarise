@@ -13,6 +13,27 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 
+/**
+ * A summary that landed while the expiry command was part way through a run.
+ *
+ * Written by hand rather than through the factory, so the tests below can assert that this
+ * exact outline is still on the row afterwards.
+ *
+ * @return array<string, mixed>
+ */
+function arrivedOutline(): array
+{
+    return [
+        'language' => 'en',
+        'original' => [
+            'headline' => 'Arrived at the last moment',
+            'points' => ['The one thing it covers'],
+            'takeaways' => ['The one thing worth remembering'],
+        ],
+        'english' => null,
+    ];
+}
+
 /*
  * A job that never runs never calls failed(), so without this a row stays pending and the
  * page waits on it forever.
@@ -147,10 +168,12 @@ test('a summary that finishes while being written off keeps its summary', functi
 
         $raced = true;
 
-        Summary::query()->whereKey($summary->getKey())->update([
-            'status' => SummaryStatus::Ready,
-            'body' => 'Arrived at the last moment.',
-        ]);
+        Summary::query()
+            ->whereKey($summary->getKey())
+            ->update([
+                'status' => SummaryStatus::Ready,
+                'outline' => arrivedOutline(),
+            ]);
     });
 
     /*
@@ -164,7 +187,7 @@ test('a summary that finishes while being written off keeps its summary', functi
 
     expect($raced)->toBeTrue()
         ->and($summary->fresh()?->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->fresh()?->body)->toBe('Arrived at the last moment.');
+        ->and($summary->fresh()?->outline)->toBe(arrivedOutline());
 
     Log::shouldNotHaveReceived('warning');
 });
@@ -193,10 +216,12 @@ test('the log distinguishes what was selected from what was failed', function ()
 
         $raced = true;
 
-        Summary::query()->whereKey($finishFirst)->update([
-            'status' => SummaryStatus::Ready,
-            'body' => 'Arrived at the last moment.',
-        ]);
+        Summary::query()
+            ->whereKey($finishFirst)
+            ->update([
+                'status' => SummaryStatus::Ready,
+                'outline' => arrivedOutline(),
+            ]);
     });
 
     $this->artisan('summaries:expire')->assertSuccessful();

@@ -10,7 +10,6 @@ use App\Models\User;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Sleep;
 use Inertia\Testing\AssertableInertia;
 use Saloon\Laravel\Facades\Saloon;
 
@@ -36,13 +35,13 @@ test('submitting a video queues the work and hands the browser its url', functio
     $response = $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
 
-    $summary = Summary::query()->sole();
+    $summary = Summary::sole();
 
     $response->assertRedirect(route('summaries.show', $summary));
 
     expect($summary->video_id)->toBe('dQw4w9WgXcQ')
         ->and($summary->status)->toBe(SummaryStatus::Pending)
-        ->and($summary->body)->toBeNull();
+        ->and($summary->outline)->toBeNull();
 
     Queue::assertPushed(SummariseVideo::class);
 });
@@ -58,7 +57,7 @@ test('a video somebody already summarised is not summarised again', function ():
 
     Queue::assertNothingPushed();
 
-    expect(Summary::query()->count())->toBe(1)
+    expect(Summary::count())->toBe(1)
         ->and($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
 });
 
@@ -79,9 +78,9 @@ test('submitting a video whose summary failed is how you retry it', function ():
 
     $summary->refresh();
 
-    expect(Summary::query()->count())->toBe(1)
+    expect(Summary::count())->toBe(1)
         ->and($summary->status)->toBe(SummaryStatus::Pending)
-        ->and($summary->body)->toBeNull()
+        ->and($summary->outline)->toBeNull()
         /*
          * And the reason the last attempt failed goes with it. Left behind, the page would
          * explain why the attempt currently running has failed while it is still running.
@@ -89,6 +88,31 @@ test('submitting a video whose summary failed is how you retry it', function ():
         ->and($summary->error)->toBeNull()
         /* A retry is a new attempt, so its clock starts now rather than an hour ago. */
         ->and($summary->requested_at->diffInSeconds(Date::now(), true))->toBeLessThan(5);
+});
+
+/*
+ * The transcript is the one thing a retry keeps. It belongs to the video rather than to the
+ * attempt, and leaving it is what lets a retry after a failed model call skip yt-dlp entirely
+ * and re-read exactly the words the failed attempt did. Clearing it alongside the outline would
+ * throw away the only reason for storing it in the first place.
+ */
+test('a retry keeps the transcript the failed attempt fetched', function (): void {
+    Queue::fake();
+
+    $summary = Summary::factory()->failed()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'transcript' => 'The words the failed attempt read.',
+        'transcript_language' => 'nl',
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->transcript)->toBe('The words the failed attempt read.')
+        ->and($summary->transcript_language)->toBe('nl');
 });
 
 /*
@@ -109,7 +133,7 @@ test('resubmitting a video already being summarised joins it without restarting 
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
         ->assertRedirect(route('summaries.show', $summary));
 
-    expect(Summary::query()->count())->toBe(1)
+    expect(Summary::count())->toBe(1)
         ->and($summary->fresh()?->requested_at->timestamp)->toBe($askedAt->timestamp);
 });
 
@@ -130,7 +154,7 @@ test('submitting a video does not wait on YouTube', function (): void {
 
     Saloon::assertNothingSent();
 
-    $summary = Summary::query()->sole();
+    $summary = Summary::sole();
 
     expect($summary->title)->toBeNull()
         ->and($summary->error)->toBeNull();
@@ -146,7 +170,6 @@ test('submitting a video does not wait on YouTube', function (): void {
 test('the page is told the title once the summary is there', function (): void {
     $summary = Summary::factory()->create([
         'title' => 'How to summarise a video',
-        'body' => 'A short summary.',
     ]);
 
     $this->actingAs(User::factory()->create())
@@ -156,7 +179,9 @@ test('the page is told the title once the summary is there', function (): void {
             ->component('home')
             ->where('summary.status', SummaryStatus::Ready->value)
             ->where('summary.title', 'How to summarise a video')
-            ->where('summary.body', 'A short summary.'),
+            ->where('summary.outline.original.headline', $summary->outline['original']['headline'])
+            /* The raw material stays on the server: it is not the answer, and it is enormous. */
+            ->missing('summary.transcript'),
         );
 });
 
@@ -189,9 +214,32 @@ test('the page is given the words it renders', function (): void {
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
             ->component('home')
             ->has('lang.summaries.errors.not_found')
+            ->has('lang.summaries.errors.no_transcript')
+            ->has('lang.summaries.errors.unavailable')
             ->has('lang.summaries.stage.queued')
+            /* The headings over the parts of a summary, and over an English translation. */
+            ->has('lang.summaries.sections.headline')
+            ->has('lang.summaries.sections.points')
+            ->has('lang.summaries.sections.takeaways')
+            ->has('lang.summaries.translation')
             ->has('lang.app.logout'),
         );
+});
+
+/*
+ * Every reason a summary can carry has a sentence to become, or the page renders a row's error
+ * code at somebody. Driven off the enum rather than a list written out here, so adding a case
+ * without its words fails this rather than shipping.
+ */
+test('every failure reason has something to say', function (): void {
+    $this->actingAs(User::factory()->create())
+        ->get(route('home'))
+        ->assertOk()
+        ->assertInertia(function (AssertableInertia $page): void {
+            foreach (SummaryError::cases() as $error) {
+                $page->has('lang.summaries.errors.'.$error->value);
+            }
+        });
 });
 
 /*
@@ -258,9 +306,8 @@ test('a pending video is joined rather than restarted, however long it has been 
  * the claim outlives each of them.
  */
 test('a summary that failed holding a claim is really summarised when asked for again', function (string $route): void {
-    Sleep::fake();
     Log::spy();
-    fakeYouTube();
+    fakeSummarisableVideo();
 
     $summary = Summary::factory()->stale()->create([
         'video_id' => 'dQw4w9WgXcQ',
@@ -295,7 +342,7 @@ test('a summary that failed holding a claim is really summarised when asked for 
     $summary->refresh();
 
     expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->body)->not->toBeEmpty()
+        ->and($summary->outline)->not->toBeNull()
         ->and($summary->started_at)->not->toBeNull();
 })->with([
     'written off by the expiry command' => 'command',
@@ -325,7 +372,7 @@ test('a brand new submission starts its clock straight away', function (): void 
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
 
-    expect(Summary::query()->sole()->requested_at->diffInSeconds(Date::now(), true))
+    expect(Summary::sole()->requested_at->diffInSeconds(Date::now(), true))
         ->toBeLessThan(5);
 });
 
@@ -338,7 +385,7 @@ test('a video id that is not one is refused', function (string $videoId): void {
 
     Queue::assertNothingPushed();
 
-    expect(Summary::query()->count())->toBe(0);
+    expect(Summary::count())->toBe(0);
 })->with([
     'truncated' => 'dQw4w9WgXc',
     'overlong' => 'dQw4w9WgXcQQ',
@@ -356,13 +403,12 @@ test('guests cannot submit a video', function (): void {
 
     Queue::assertNothingPushed();
 
-    expect(Summary::query()->count())->toBe(0);
+    expect(Summary::count())->toBe(0);
 });
 
 test('a finished summary is shown at its own url', function (): void {
     $summary = Summary::factory()->create([
         'video_id' => 'dQw4w9WgXcQ',
-        'body' => 'A short summary.',
     ]);
 
     $this->actingAs(User::factory()->create())
@@ -372,7 +418,7 @@ test('a finished summary is shown at its own url', function (): void {
             ->component('home')
             ->where('videoId', 'dQw4w9WgXcQ')
             ->where('summary.status', SummaryStatus::Ready->value)
-            ->where('summary.body', 'A short summary.'),
+            ->where('summary.outline.original.headline', $summary->outline['original']['headline']),
         );
 });
 
@@ -385,7 +431,7 @@ test('a summary still being produced says so, which is what the page polls on', 
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
             ->component('home')
             ->where('summary.status', SummaryStatus::Pending->value)
-            ->where('summary.body', null),
+            ->where('summary.outline', null),
         );
 });
 
