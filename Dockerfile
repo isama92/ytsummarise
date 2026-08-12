@@ -38,13 +38,19 @@
 FROM dunglas/frankenphp:php8.5-bookworm AS build-base
 WORKDIR /app
 
-# Horizon lists ext-pcntl and ext-posix as hard requirements. The base image has posix and
-# not pcntl, which makes this a BUILD requirement rather than a runtime one: `composer
-# install` below verifies the lock file's platform requirements and stops with "requires
-# ext-pcntl * -> it is missing from your system" before a single package is written. So it
-# belongs here, in the stage both `vendor` and `assets` inherit, and separately in `prod`,
-# which is a different image and shares nothing with this one.
-RUN install-php-extensions pcntl
+# Both of these are BUILD requirements rather than runtime ones, which is the whole reason
+# they are here and not only in `prod`: `composer install` below verifies platform
+# requirements and stops with "requires ext-x * -> it is missing from your system" before a
+# single package is written.
+#
+# pcntl because Horizon lists ext-pcntl and ext-posix as hard requirements and the base image
+# has only posix. redis because composer.json requires ext-redis - declared deliberately, so
+# that dropping it from the `prod` line below fails this build instead of failing at the
+# first session read on a running container.
+#
+# This is the stage both `vendor` and `assets` inherit; `prod` is a different image and
+# shares nothing with it, so it installs its own.
+RUN install-php-extensions pcntl redis
 
 
 # PHP dependencies. Split so the expensive `composer install` is keyed on the lock file

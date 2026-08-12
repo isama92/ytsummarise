@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\Queue;
+use App\Support\SummaryBudget;
 
 return [
 
@@ -64,30 +65,24 @@ return [
          * one slow job. Its own queue name too, so a worker on one connection cannot
          * reserve the other's jobs off the shared Redis database.
          *
-         * retry_after is derived rather than configured: it has to stay above the job's
-         * timeout or the worker reserves a job that is still running, and summarising a
-         * video twice is a paid mistake. Reading the env here rather than
-         * config('summaries.timeout') because a config file cannot call config() at all -
-         * the repository is only bound once every file has been read.
+         * retry_after has to stay above the job's timeout, or the worker reserves a job that
+         * is still running and one video is summarised twice at a model call each. Read
+         * through SummaryBudget rather than config('summaries.timeout') because a config
+         * file cannot call config() at all - the repository is only bound once every file
+         * has been read. A class it can reach; a config value it cannot.
          *
-         * Which means the whole derivation is repeated from there rather than only the
-         * floor: that timeout is itself derived from what the steps inside the job are
-         * allowed to take, so reading SUMMARY_TIMEOUT alone would leave this below the
-         * real timeout for anybody who raised a step budget. The arithmetic is duplicated
-         * knowingly - a third time in config/horizon.php, for the supervisor that has to
-         * sit between the job and this - and SummariseVideoTest asserts all three agree,
-         * which is what catches it if only one of them is ever changed.
+         * The minute on top is the margin, and config/horizon.php puts the supervisor's own
+         * timeout inside it. The order that matters is job < supervisor < this.
          */
         'summaries' => [
             'driver' => 'redis',
             'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
             'queue' => Queue::Summaries->value,
             'block_for' => null,
-            'retry_after' => max(
-                (2 * max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120)))
-                    + (3 * max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600)))
-                    + 60,
-                max(60, (int) env('SUMMARY_TIMEOUT', 3600)),
+            'retry_after' => SummaryBudget::seconds(
+                env('SUMMARY_MODEL_TIMEOUT'),
+                env('SUMMARY_TRANSCRIPT_TIMEOUT'),
+                env('SUMMARY_TIMEOUT'),
             ) + 60,
             'after_commit' => false,
         ],

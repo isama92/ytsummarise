@@ -10,6 +10,7 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
+        "ext-redis": "*",
         "inertiajs/inertia-laravel": "^3.3.1",
         "laravel/ai": "^0.10.3",
         "laravel/framework": "^13.25",

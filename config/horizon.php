@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\Queue;
+use App\Support\SummaryBudget;
 use Illuminate\Support\Str;
 
 /*
@@ -11,23 +12,20 @@ use Illuminate\Support\Str;
  *      (summaries.timeout)   (below)        (queue.connections.summaries)
  *
  * The job is what actually stops - SummariseVideo sets $timeout from config('summaries.timeout')
- * and Laravel prefers a job's own timeout over the worker's. This one is the fallback under it,
- * and separately the grace Horizon gives a terminating worker to finish what it is holding
- * before it stops the process outright (ProcessPool::stopTerminatingProcessesThatAreHanging).
- * So it sits above the job's budget rather than at it, and below retry_after, which is that
- * plus sixty.
+ * and Laravel prefers a job's own timeout over the worker's. The supervisor's is the fallback
+ * under it, and separately the grace Horizon gives a terminating worker to finish what it is
+ * holding before it stops the process outright
+ * (ProcessPool::stopTerminatingProcessesThatAreHanging). So it sits above the job's budget
+ * rather than at it, and below retry_after, which is that plus sixty.
  *
- * Derived rather than written down, and derived here rather than read from config('summaries'):
- * a config file cannot call config(), because the repository is only bound once every file has
- * been read. That is the same wall config/queue.php hits, and this is knowingly the third copy
- * of one piece of arithmetic. SummariseVideoTest asserts all three agree, which is what catches
- * a step budget being raised in only one of them.
+ * Read through SummaryBudget rather than config('summaries.timeout') because a config file
+ * cannot call config(): the repository is only bound once every file has been read. A class it
+ * can reach, which is also how App\Enums\Queue is used below.
  */
-$summaryTimeout = max(
-    (2 * max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120)))
-        + (3 * max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600)))
-        + 60,
-    max(60, (int) env('SUMMARY_TIMEOUT', 3600)),
+$summaryTimeout = SummaryBudget::seconds(
+    env('SUMMARY_MODEL_TIMEOUT'),
+    env('SUMMARY_TRANSCRIPT_TIMEOUT'),
+    env('SUMMARY_TIMEOUT'),
 );
 
 return [

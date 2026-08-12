@@ -44,7 +44,8 @@ return [
     'caching' => [
         'embeddings' => [
             'cache' => false,
-            'store' => env('CACHE_STORE', 'database'),
+            /* Same fallback as config/cache.php, which is the file that decides what exists. */
+            'store' => env('CACHE_STORE', 'redis'),
         ],
     ],
 

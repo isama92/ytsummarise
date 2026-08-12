@@ -40,6 +40,11 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
           php-version: '8.5'
+          # composer.json requires ext-redis, and setup-php's default set does not
+          # include it, so `composer install` fails the platform check without this.
+          # pcntl comes from laravel/horizon and is built into the php-cli builds
+          # setup-php installs; it is named anyway so the requirement is visible.
+          extensions: pcntl, redis
           tools: composer:v2
           coverage: none
 

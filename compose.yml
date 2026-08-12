@@ -128,13 +128,36 @@ services:
   # can read.
   redis:
     image: redis:8-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+
+    # A ceiling rather than a target - real use here is nowhere near it. A queued summary
+    # carries one integer, so a job payload is under a kilobyte, and Horizon's own records
+    # trim after an hour or a week. Reaching a gigabyte means something is wrong rather than
+    # busy, which is why the policy is noeviction: at the limit writes fail loudly instead of
+    # Redis quietly deleting somebody's queued job or half of Horizon's history to make room.
+    # Both databases share this one arena, so a runaway cache would otherwise take the queue
+    # with it - eviction just changes which of the two you lose silently.
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory"
+      - "1gb"
+      - "--maxmemory-policy"
+      - "noeviction"
 
     networks:
       - default
 
     volumes:
       - redis:/data
+
+    # Load bearing, not tidiness. The image's entrypoint drops from root to redis with
+    # setpriv, which needs CAP_SETUID and CAP_SETGID - and cap_drop below takes those, so
+    # without this it stays root with an empty capability set and cannot write into /data
+    # (owned redis:redis). The container then exits 1 on "Can't open or create append-only
+    # dir", never goes healthy, and every service here waits on it, so nothing starts at all.
+    # Naming the user directly means the entrypoint has nothing to drop.
+    user: redis
 
     security_opt:
       - "no-new-privileges:true"
@@ -201,8 +224,13 @@ services:
 
     # Unlike a bare worker, Horizon can be asked. This turns "the master died and is
     # restart-looping" into an unhealthy container rather than something you find in the logs.
+    #
+    # Exit 2 is inactive, 1 is paused and 0 is running, and only 2 is a fault. Testing the code
+    # rather than letting docker read any non-zero as unhealthy is what keeps `horizon:pause` -
+    # the supported way to hold the queue during maintenance - from being indistinguishable
+    # from a dead master. `$$` escapes compose's own interpolation.
     healthcheck:
-      test: ["CMD", "php", "artisan", "horizon:status"]
+      test: ["CMD-SHELL", "php artisan horizon:status; [ $$? -ne 2 ]"]
       interval: 30s
       timeout: 10s
       retries: 3
