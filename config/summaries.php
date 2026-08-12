@@ -63,4 +63,36 @@ return [
 
     'abandon_after' => max($timeout, (int) env('SUMMARY_ABANDON_AFTER', 86400)),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Requeue After
+    |--------------------------------------------------------------------------
+    |
+    | How long the recovery command leaves a summary alone, in seconds, after
+    | queueing a job for it again.
+    |
+    | Only ever about the second requeue and the ones after it. A summary that
+    | has never been requeued is requeued at the next run whatever this says,
+    | so a job lost with its queue is repaired within the hour.
+    |
+    | What this bounds is the repetition. The command cannot tell a job waiting
+    | its turn from one that no longer exists, so it queues again and lets the
+    | claim make a duplicate harmless - but running hourly against a lock that
+    | lapses in half an hour, it did that to every waiting summary every hour,
+    | and an outage lasting until the abandon horizon left each one with a day's
+    | worth of duplicates for the workers to drain on their way back.
+    |
+    | Six hours against a day of waiting is four attempts rather than
+    | twenty-four, which is the trade: a second requeue only helps in the
+    | unlikely case that the first was lost as well, so they are worth spacing
+    | out, and anything still unstarted at the end is written off and said so
+    | rather than retried in silence forever.
+    |
+    | Floored at the timeout, because requeueing while the previous dispatch's
+    | uniqueness lock is still held only records a requeue that never happened.
+    |
+    */
+
+    'requeue_after' => max($timeout, (int) env('SUMMARY_REQUEUE_AFTER', 21600)),
+
 ];

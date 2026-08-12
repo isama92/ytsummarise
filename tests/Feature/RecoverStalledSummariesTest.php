@@ -72,18 +72,149 @@ test('a summary nothing ever started is eventually written off', function (): vo
     Log::spy();
     Queue::fake();
 
-    $waiting = Summary::factory()->pending()->create([
-        'requested_at' => Date::now()->subSeconds(config()->integer('summaries.abandon_after') + 1),
-    ]);
+    $waiting = Summary::factory()->neverStarted()->create();
 
     $this->artisan('summaries:recover')->assertSuccessful();
 
     expect($waiting->fresh()?->status)->toBe(SummaryStatus::Failed);
 
-    /* And not queued again on the way out. */
+    /*
+     * And not queued again on the way out. Both halves of this run over rows nothing has
+     * started, so a set that did not exclude these dispatched a job for the row it was
+     * about to fail - and because the write-off leaves started_at null, that job went on
+     * to claim the row and finish it, undoing the write-off within the minute.
+     */
     Queue::assertNothingPushed();
 
     Log::shouldHaveReceived('warning')->once();
+});
+
+/*
+ * Which is guaranteed by the sets rather than by the order the command works through them:
+ * the two are complements, so no row can be in both however they are visited.
+ */
+test('no summary is both worth queueing again and past waiting for', function (): void {
+    Summary::factory()->pending()->create(['requested_at' => Date::now()]);
+    Summary::factory()->neverStarted()->create();
+    Summary::factory()->processing()->create();
+    Summary::factory()->stalled()->create();
+    Summary::factory()->create();
+
+    $queueAgain = Summary::query()->awaitingWorker()->pluck('id');
+    $giveUpOn = Summary::query()->neverStarted()->pluck('id');
+
+    expect($queueAgain)->toHaveCount(1)
+        ->and($giveUpOn)->toHaveCount(1)
+        ->and($queueAgain->intersect($giveUpOn))->toBeEmpty()
+        /* And between them they are the whole unclaimed set: the split loses nobody. */
+        ->and($queueAgain->merge($giveUpOn)->sort()->values()->all())
+        ->toBe(Summary::query()->unclaimed()->pluck('id')->sort()->values()->all());
+});
+
+/*
+ * Which the spacing on the requeue must not disturb, and is why it is a scope on top rather
+ * than a condition folded into awaitingWorker. Holding a row back for an hour says nothing
+ * about whether it is one to give up on, and a row that fell out of both sets would wait
+ * forever without anybody ever being told.
+ */
+test('holding a summary back from the queue does not make it one to give up on', function (): void {
+    $requeued = Summary::factory()->requeued()->create();
+
+    expect(Summary::query()->dueForRequeue()->count())->toBe(0)
+        ->and(Summary::query()->awaitingWorker()->pluck('id')->all())->toBe([$requeued->id])
+        ->and(Summary::query()->neverStarted()->count())->toBe(0);
+});
+
+/*
+ * The command cannot tell a job waiting its turn from one that no longer exists, so it
+ * queues again and lets the claim make a duplicate harmless. Doing that every hour to every
+ * waiting summary is what made an outage expensive to come back from: hourly runs against a
+ * lock lapsing in half an hour left a day's worth of duplicates per row to drain.
+ */
+test('a summary queued again recently is left alone until the spacing has passed', function (): void {
+    Queue::fake();
+
+    $requeued = Summary::factory()->requeued()->create();
+
+    $this->artisan('summaries:recover')
+        ->expectsOutputToContain('Nothing to recover.')
+        ->assertSuccessful();
+
+    Queue::assertNothingPushed();
+
+    /* Still waiting, and still nobody's problem to write off. */
+    expect($requeued->fresh()?->status)->toBe(SummaryStatus::Pending);
+});
+
+test('a summary queued again long enough ago is queued again', function (): void {
+    Queue::fake();
+
+    $requeued = Summary::factory()->requeued()->create([
+        'requeued_at' => Date::now()->subSeconds(config()->integer('summaries.requeue_after') + 1),
+    ]);
+
+    $this->artisan('summaries:recover')->assertSuccessful();
+
+    Queue::assertPushed(SummariseVideo::class, 1);
+
+    /* And the clock on the spacing starts again with it. */
+    expect($requeued->fresh()?->requeued_at?->diffInSeconds(Date::now(), true))->toBeLessThan(5);
+});
+
+/*
+ * The first one is prompt, whatever the spacing says: a job lost with its queue is repaired
+ * at the next run rather than hours later, and only the repetition after that is spaced out.
+ */
+test('a summary nobody has queued again yet is queued again at once, and it is recorded', function (): void {
+    Queue::fake();
+
+    $waiting = Summary::factory()->pending()->create();
+
+    expect($waiting->requeued_at)->toBeNull();
+
+    $this->artisan('summaries:recover')->assertSuccessful();
+
+    Queue::assertPushed(SummariseVideo::class, 1);
+
+    expect($waiting->fresh()?->requeued_at)->not->toBeNull();
+});
+
+/*
+ * The other side of the same window as the test further down, and the more expensive one to
+ * get wrong. A row nothing had started when the command read it can be claimed by a worker
+ * a moment later, and failing it then tells the page "did not work" while a paid call is
+ * running - then the page offers a retry, the controller clears the claim because the row
+ * is failed, and a second job summarises a video already being summarised.
+ */
+test('a summary claimed while being written off is left to the worker that claimed it', function (): void {
+    Log::spy();
+    Queue::fake();
+
+    $summary = Summary::factory()->neverStarted()->create();
+    $raced = false;
+
+    /* The select that reads video_id for rows nothing has started; see the note below. */
+    DB::listen(function (QueryExecuted $query) use ($summary, &$raced): void {
+        if ($raced || ! str_contains($query->sql, 'video_id') || ! str_contains($query->sql, 'started_at" is null')) {
+            return;
+        }
+
+        $raced = true;
+
+        Summary::query()->whereKey($summary->getKey())->update(['started_at' => Date::now()]);
+    });
+
+    $this->artisan('summaries:recover')
+        ->expectsOutputToContain('Nothing to recover.')
+        ->assertSuccessful();
+
+    $summary->refresh();
+
+    expect($raced)->toBeTrue()
+        ->and($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->started_at)->not->toBeNull();
+
+    Log::shouldNotHaveReceived('warning');
 });
 
 test('the two horizons are separate, and waiting is given far longer than working', function (): void {
@@ -163,14 +294,16 @@ test('a summary that finishes while being written off keeps its summary', functi
     /*
      * Finish the row the moment the command has read it, which lands the change in the
      * window between its select and its update - the only place this can go wrong. The
-     * flag keeps the listener from reacting to its own queries.
+     * event fires once the rows have been fetched, so a listener on the right select is
+     * exactly that window rather than an approximation of it.
+     *
+     * The right select is the one that reads video_id for rows a worker abandoned, which
+     * is what the started_at test picks out: the command runs three queries over this
+     * table, and reacting to the first of them would land the change before the write-off
+     * had even read the row, leaving the guard on the update untested.
      */
     DB::listen(function (QueryExecuted $query) use ($summary, &$raced): void {
-        if ($raced || ! str_starts_with(strtolower(trim($query->sql)), 'select')) {
-            return;
-        }
-
-        if (! str_contains($query->sql, 'summaries')) {
+        if ($raced || ! str_contains($query->sql, 'video_id') || ! str_contains($query->sql, 'started_at" is not null')) {
             return;
         }
 

@@ -206,6 +206,68 @@ test('resubmitting a video whose worker went missing starts a new attempt', func
 });
 
 /*
+ * The third way an attempt is over, and the one with no worker to blame: nothing ever picked
+ * the row up, and it has waited past the point of expecting anything to. The controller has
+ * to reach the same verdict the recovery command does, or somebody is handed a page that
+ * waits on a row the next hourly run is about to write off.
+ */
+test('resubmitting a video nothing ever started starts a new attempt', function (): void {
+    Queue::fake();
+
+    $summary = Summary::factory()->neverStarted()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        /* Queued again at some point on the way, without anything ever picking it up. */
+        'requeued_at' => Date::now()->subHours(2),
+    ]);
+
+    $waitedSince = $summary->requested_at;
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    Queue::assertPushed(SummariseVideo::class);
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->requested_at->greaterThan($waitedSince))->toBeTrue()
+        ->and($summary->started_at)->toBeNull()
+        /*
+         * Cleared with the claim. A new attempt carrying the old record would be passed
+         * over by the recovery command for hours on the strength of a job queued for the
+         * attempt before it.
+         */
+        ->and($summary->requeued_at)->toBeNull()
+        /* And no longer a row the command would give up on. */
+        ->and(Summary::query()->neverStarted()->count())->toBe(0)
+        /* It is one the command would queue again, though, which is the point of clearing it. */
+        ->and(Summary::query()->dueForRequeue()->count())->toBe(1);
+});
+
+/*
+ * The bound on that, and the reason it is a second horizon rather than the timeout again.
+ * How long the work itself is given says nothing about how long a job may wait for a worker,
+ * and restarting the clock here would mislead whoever is already watching it.
+ */
+test('a video that has waited longer than the work is given is still joined rather than restarted', function (): void {
+    Queue::fake();
+
+    $askedAt = Date::now()->subSeconds(config()->integer('summaries.timeout') + 1);
+
+    $summary = Summary::factory()->pending()->create([
+        'video_id' => 'dQw4w9WgXcQ',
+        'requested_at' => $askedAt,
+    ]);
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    expect($summary->fresh()?->requested_at->timestamp)->toBe($askedAt->timestamp);
+});
+
+/*
  * The whole way round, because the claim is a return-early and a stale one would make a row
  * unworkable without saying so: failed while holding a claim, asked for again, and actually
  * summarised. If the reset ever stops clearing the claim, the job below finds somebody else

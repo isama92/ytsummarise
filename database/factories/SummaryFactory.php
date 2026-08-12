@@ -74,6 +74,33 @@ class SummaryFactory extends Factory
     }
 
     /**
+     * A summary still waiting its turn that the recovery command has already queued again.
+     *
+     * Deliberately still unclaimed: the record of a requeue says a job was dispatched, not
+     * that anything picked it up, which is the whole reason the row is still here.
+     */
+    public function requeued(): static
+    {
+        return $this->pending()->state(fn (): array => [
+            'requeued_at' => Date::now(),
+        ]);
+    }
+
+    /**
+     * A summary nothing ever started, having waited long enough that nothing ever will.
+     *
+     * The mirror of stalled above and the other way an attempt ends. The age is on
+     * requested_at because there is no started_at to put it on: that is the whole
+     * distinction, and it is measured against the far longer of the two horizons.
+     */
+    public function neverStarted(): static
+    {
+        return $this->pending()->state(fn (): array => [
+            'requested_at' => Date::now()->subSeconds(config()->integer('summaries.abandon_after') + 1),
+        ]);
+    }
+
+    /**
      * A summary whose job gave up.
      */
     public function failed(): static

@@ -11,6 +11,7 @@ use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -53,11 +54,22 @@ class RecoverStalledSummaries extends Command
     }
 
     /**
-     * Queue a job again for every summary no worker has started.
+     * Queue a job again for every summary no worker has started and one still might.
      *
      * Most of these are simply waiting their turn and the uniqueness lock will drop the
      * duplicate, which is why this is not a warning: it is the ordinary state of a queue
      * with anything in it.
+     *
+     * Not unclaimed, and the difference is the whole reason those are separate scopes.
+     * Unclaimed includes the rows failNeverStarted is about to write off, so queueing from
+     * it dispatched a job for a row this same run then failed - and since the write-off
+     * leaves started_at null, that job went on to claim the row it had just given up on and
+     * finish it, resurrecting a summary the command had deliberately abandoned.
+     *
+     * Not awaitingWorker either, which is that set without the spacing: this runs hourly
+     * against a lock that lapses in half an hour, so queueing every waiting summary every
+     * time left an outage's worth of duplicates for the workers to drain on their way back.
+     * Harmless individually, since each bounces off the claim, and a great deal of them.
      */
     private function requeueUnstarted(): int
     {
@@ -69,8 +81,17 @@ class RecoverStalledSummaries extends Command
          * handful and occasionally everything submitted during an outage; loading all of it
          * to dispatch one job at a time buys nothing and has no ceiling.
          */
-        foreach (Summary::query()->unclaimed()->cursor() as $summary) {
+        foreach (Summary::query()->dueForRequeue()->cursor() as $summary) {
             SummariseVideo::dispatch($summary);
+
+            /*
+             * Recorded a row at a time and after the dispatch rather than in one update at
+             * the end, so a run that dies partway through has told the truth about what it
+             * did. The other order suppresses the next requeue for a dispatch that never
+             * happened, which is the more expensive way to be wrong: this one costs a
+             * duplicate the claim will bounce, that one costs a summary nobody ever makes.
+             */
+            $summary->update(['requeued_at' => Date::now()]);
 
             $dispatched++;
 
@@ -145,14 +166,21 @@ class RecoverStalledSummaries extends Command
         }
 
         /*
-         * Still pending, checked again here rather than trusted from the query above. A
-         * row can finish in the moment between the two, and writing it off then would
-         * leave it failed with a finished summary still attached, which the page renders
-         * as "did not work" over an answer that exists.
+         * The same conditions again, checked by the update rather than trusted from the
+         * select a moment earlier, because a row can stop qualifying in between and writing
+         * it off then is wrong in both directions. One can finish, leaving it failed with a
+         * summary still attached and the page saying "did not work" over an answer that
+         * exists. One nothing had started can be claimed by a worker, and failing that row
+         * hands the video back to the controller to reset and dispatch again while the
+         * first worker is still running - two paid calls for one video, which is the thing
+         * the claim exists to prevent.
+         *
+         * Re-applying the whole scope rather than re-checking status covers both without
+         * either path having to know which of them it is. The scope's horizon is the one
+         * captured when it was built, so this can only ever narrow what was selected.
          */
-        $failed = Summary::query()
+        $failed = $rows->clone()
             ->whereKey($videoIds->keys())
-            ->where('status', SummaryStatus::Pending)
             ->update(['status' => SummaryStatus::Failed]);
 
         /*

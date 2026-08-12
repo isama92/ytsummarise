@@ -66,6 +66,11 @@ class SummaryController extends Controller
          * every job queued for it from then on would find somebody else apparently working
          * and return having done nothing.
          *
+         * And so does the record of the last requeue, for the same reason one step removed.
+         * A new attempt that inherited it would be passed over by the recovery command for
+         * hours on the strength of a job queued for the attempt before it, which is exactly
+         * the stretch where a lost dispatch most needs replacing.
+         *
          * A row somebody is working on, or one still plausibly waiting its turn, is left
          * exactly as it is. Whoever asked first is already waiting, and restarting their
          * clock would mislead them; the dispatch below is what joins them to it.
@@ -80,6 +85,7 @@ class SummaryController extends Controller
                 'body' => null,
                 'requested_at' => Date::now(),
                 'started_at' => null,
+                'requeued_at' => null,
             ]);
         }
 

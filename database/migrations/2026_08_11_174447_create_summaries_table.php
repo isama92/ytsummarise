@@ -53,8 +53,9 @@ return new class extends Migration
             $table->text('body')->nullable();
 
             /*
-             * When the attempt currently in flight was asked for. This is the clock the
-             * page counts up from.
+             * When the attempt currently in flight was asked for, which is what the page
+             * counts up from while it waits and what decides when a summary nothing has
+             * started has waited so long that nothing is going to.
              *
              * Not created_at: a row outlives its attempts. Retrying a summary that failed
              * starts a new clock, while somebody joining a job already running has to see
@@ -75,13 +76,33 @@ return new class extends Migration
              */
             $table->timestamp('started_at')->nullable();
 
+            /*
+             * When the recovery command last queued a job for this row again, which is what
+             * stops it doing so every hour for as long as the row waits.
+             *
+             * Null is the ordinary state and means never, so the first requeue is prompt -
+             * a job lost with its queue is repaired at the next run rather than hours
+             * later. After that the row is left alone for a good while, because a second
+             * requeue only helps if the first one was lost too, and an outage lasting a day
+             * would otherwise leave every waiting summary with a day's worth of duplicate
+             * jobs to drain.
+             *
+             * Cleared whenever an attempt restarts, along with started_at, for the same
+             * reason: a stale value here suppresses the requeue for the new attempt.
+             */
+            $table->timestamp('requeued_at')->nullable();
+
             $table->timestamps();
 
             /*
-             * The two queries the recovery command runs: rows it may have to write off, and
-             * rows it may have to queue again.
+             * The three queries the recovery command runs, which do not share one index.
+             *
+             * Rows a worker abandoned are found by how long ago it started, while the two
+             * halves of the set nothing has started - still worth queueing again, and
+             * waited too long to be - are split on how long ago it was asked for.
              */
             $table->index(['status', 'started_at']);
+            $table->index(['status', 'requested_at']);
         });
     }
 
