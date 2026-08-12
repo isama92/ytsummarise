@@ -2,7 +2,14 @@
 
 declare(strict_types=1);
 
+use App\Services\YouTube\Requests\OembedRequest;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Saloon\Config;
+use Saloon\Exceptions\Request\FatalRequestException;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Http\PendingRequest;
+use Saloon\Laravel\Facades\Saloon;
 use Tests\TestCase;
 
 /*
@@ -18,6 +25,21 @@ use Tests\TestCase;
 
 pest()->extend(TestCase::class)
     ->use(RefreshDatabase::class)
+    /*
+     * Nothing in the suite is allowed to reach the network. Summarising a video looks a
+     * video up over http, so without this a test that forgets to fake it passes on a
+     * developer's machine, hits YouTube from CI, and fails whenever YouTube feels like it.
+     * A stray request throws instead, and says which url it was.
+     *
+     * Both clients, because they are genuinely separate: Saloon does not go through
+     * Illuminate's http client at all - it has its own sender - so Http::fake() and
+     * Http::preventStrayRequests() see nothing a connector sends, and Saloon's own guard sees
+     * nothing Http:: sends. The lookup uses Saloon; anything else added later may not.
+     */
+    ->beforeEach(function (): void {
+        Http::preventStrayRequests();
+        Config::preventStrayRequests();
+    })
     ->in('Feature');
 
 /*
@@ -44,7 +66,64 @@ expect()->extend('toBeOne', fn () => $this->toBe(1));
 |
 */
 
-function something(): void
+/**
+ * Run a job the way a worker would, resolving whatever its handle() asks for.
+ *
+ * These tests call handle() directly rather than dispatching, because the job names its own
+ * queue connection and that overrides the sync default phpunit.xml sets - dispatching it
+ * queues it instead of running it. Going through the container is what supplies the
+ * dependencies handle() takes by method injection, exactly as the queue worker does.
+ */
+function work(object $job): void
 {
-    // ..
+    app()->call([$job, 'handle']);
+}
+
+/**
+ * A YouTube that answers, for the tests that are about something else.
+ *
+ * Only the keyless endpoint, because a title is the whole answer and the lookup asks nothing
+ * further once it has one. What the lookup does with every other answer is
+ * tests/Feature/LookupVideoTest.php's business, not every job test's.
+ *
+ * Keyed by request class rather than by url, which is how Saloon's fakes work. The plugin
+ * destroys the global mock client when the application boots, so each test starts clean without
+ * any teardown here.
+ */
+function fakeYouTube(string $title = 'Never Gonna Give You Up'): void
+{
+    Saloon::fake([
+        OembedRequest::class => MockResponse::make(['title' => $title]),
+    ]);
+}
+
+/**
+ * The application as it runs without a Data API key, which is a configuration it supports.
+ *
+ * phpunit.xml pins a fake key, so the suite exercises the fuller two-endpoint configuration by
+ * default and a test wanting the keyless path opts into it here. Null rather than an empty
+ * string: config/services.php is what turns an empty environment value into null, and setting
+ * the config directly goes around it, so an empty string here would read as a key somebody meant
+ * and the Data API would be asked with `key=` on the end.
+ */
+function withoutYouTubeKey(): void
+{
+    config()->set('services.youtube.key');
+}
+
+/**
+ * A YouTube that never answers at all.
+ *
+ * Saloon's equivalent of a connection error, which is a thrown FatalRequestException rather than
+ * a response with a status. The closure form is used because the exception has to carry the
+ * pending request that failed, and only Saloon knows that at the point of sending.
+ */
+function youTubeUnreachable(): MockResponse
+{
+    return MockResponse::make()->throw(
+        fn (PendingRequest $pendingRequest): FatalRequestException => new FatalRequestException(
+            new RuntimeException('Could not resolve host'),
+            $pendingRequest,
+        ),
+    );
 }

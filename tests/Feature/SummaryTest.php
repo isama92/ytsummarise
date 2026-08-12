@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\SummariseVideo;
 use App\Models\Summary;
@@ -11,6 +12,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Sleep;
 use Inertia\Testing\AssertableInertia;
+use Saloon\Laravel\Facades\Saloon;
 
 /*
  * The uuid is the public handle and the integer id is still the identity. HasUuids fills
@@ -66,6 +68,7 @@ test('submitting a video whose summary failed is how you retry it', function ():
     $summary = Summary::factory()->failed()->create([
         'video_id' => 'dQw4w9WgXcQ',
         'requested_at' => Date::now()->subHour(),
+        'error' => SummaryError::Unreachable,
     ]);
 
     $this->actingAs(User::factory()->create())
@@ -79,6 +82,11 @@ test('submitting a video whose summary failed is how you retry it', function ():
     expect(Summary::query()->count())->toBe(1)
         ->and($summary->status)->toBe(SummaryStatus::Pending)
         ->and($summary->body)->toBeNull()
+        /*
+         * And the reason the last attempt failed goes with it. Left behind, the page would
+         * explain why the attempt currently running has failed while it is still running.
+         */
+        ->and($summary->error)->toBeNull()
         /* A retry is a new attempt, so its clock starts now rather than an hour ago. */
         ->and($summary->requested_at->diffInSeconds(Date::now(), true))->toBeLessThan(5);
 });
@@ -106,46 +114,39 @@ test('resubmitting a video already being summarised joins it without restarting 
 });
 
 /*
- * Before the job rather than inside it, because the point of having a title is to show it
- * while the summary is still being produced.
+ * Nothing in the request path talks to YouTube. Submitting has to stay fast and has to keep
+ * working while YouTube does not, so both the existence check and the title belong to the job,
+ * which is allowed to be slow and allowed to fail.
+ *
+ * Asserted twice over: the suite's Saloon guard throws a StrayRequestException on any real send,
+ * and this says outright that nothing was sent.
  */
-test('the video is titled before the job is queued', function (): void {
+test('submitting a video does not wait on YouTube', function (): void {
     Queue::fake();
+    Saloon::fake([]);
 
     $this->actingAs(User::factory()->create())
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
 
+    Saloon::assertNothingSent();
+
     $summary = Summary::query()->sole();
 
-    expect($summary->title)->not->toBeNull();
+    expect($summary->title)->toBeNull()
+        ->and($summary->error)->toBeNull();
 
     /*
      * The job carries an id and loads the row when it runs, so what it is handed cannot be
-     * asserted from the payload any more - only that it is queued for this row. What matters
-     * either way is above: the title is on the row before the request comes back, which is
-     * what the page needs to have a heading for the whole wait.
+     * asserted from the payload any more - only that it is queued for this row.
      */
     Queue::assertPushed(SummariseVideo::class,
         fn (SummariseVideo $job): bool => $job->summaryId === $summary->id);
 });
 
-test('a title already known is not looked up again', function (): void {
-    Queue::fake();
-
-    $summary = Summary::factory()->failed()->create([
-        'video_id' => 'dQw4w9WgXcQ',
-        'title' => 'The title we already had',
-    ]);
-
-    $this->actingAs(User::factory()->create())
-        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ']);
-
-    expect($summary->fresh()?->title)->toBe('The title we already had');
-});
-
-test('the page is told the title, and keeps it while the summary is still coming', function (): void {
-    $summary = Summary::factory()->pending()->create([
+test('the page is told the title once the summary is there', function (): void {
+    $summary = Summary::factory()->create([
         'title' => 'How to summarise a video',
+        'body' => 'A short summary.',
     ]);
 
     $this->actingAs(User::factory()->create())
@@ -153,9 +154,43 @@ test('the page is told the title, and keeps it while the summary is still coming
         ->assertOk()
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
             ->component('home')
-            ->where('summary.status', SummaryStatus::Pending->value)
+            ->where('summary.status', SummaryStatus::Ready->value)
             ->where('summary.title', 'How to summarise a video')
-            ->where('summary.body', null),
+            ->where('summary.body', 'A short summary.'),
+        );
+});
+
+/*
+ * The reason reaches the page as the code it is stored as, not as a sentence: the wording lives
+ * in lang/en/summaries.php so it can be changed without a migration. See .ai/rules/i18n.md.
+ */
+test('the page is told why an attempt failed', function (): void {
+    $summary = Summary::factory()->failed()->create(['error' => SummaryError::NotFound]);
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('summaries.show', $summary))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('home')
+            ->where('summary.status', SummaryStatus::Failed->value)
+            ->where('summary.error', SummaryError::NotFound->value),
+        );
+});
+
+/*
+ * Every string the page shows comes from lang/en, so the page is useless without them. A
+ * missing group renders as raw keys rather than as nothing, which is deliberate, but it is
+ * still not something to ship. See .ai/rules/i18n.md.
+ */
+test('the page is given the words it renders', function (): void {
+    $this->actingAs(User::factory()->create())
+        ->get(route('home'))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->component('home')
+            ->has('lang.summaries.errors.not_found')
+            ->has('lang.summaries.stage.queued')
+            ->has('lang.app.logout'),
         );
 });
 
@@ -225,6 +260,7 @@ test('a pending video is joined rather than restarted, however long it has been 
 test('a summary that failed holding a claim is really summarised when asked for again', function (string $route): void {
     Sleep::fake();
     Log::spy();
+    fakeYouTube();
 
     $summary = Summary::factory()->stale()->create([
         'video_id' => 'dQw4w9WgXcQ',
@@ -254,7 +290,7 @@ test('a summary that failed holding a claim is really summarised when asked for 
      * sync default phpunit.xml sets, so dispatching it under test queues it rather than
      * running it. What matters here is that handle() can claim the row it was given.
      */
-    (new SummariseVideo($summary->id))->handle();
+    work(new SummariseVideo($summary->id));
 
     $summary->refresh();
 

@@ -7,14 +7,19 @@
     "guidelines": true,
     "mcp": true,
     "nightwatch": false,
+    "packages": [
+        "saloonphp/laravel-plugin"
+    ],
     "sail": false,
     "skills": [
         "infer-conventions",
+        "ai-sdk-development",
         "laravel-best-practices",
         "socialite-development",
         "wayfinder-development",
         "pest-testing",
         "inertia-react-development",
-        "tailwindcss-development"
+        "tailwindcss-development",
+        "saloon-development"
     ]
 }

@@ -40,5 +40,21 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!-- A fake key, so the suite runs the fuller configuration by default and never a
+             developer's real one. Whoever wants the keyless path says so, with
+             withoutYouTubeKey() - see tests/Pest.php.
+
+             Two elements' worth of care, because an api key is the one value here somebody
+             plausibly exports from a shell profile rather than writing into .env:
+
+             <env> alone covers .env only. Without force, phpunit skips any variable already in
+             the environment. With force it sets putenv and $_ENV - but not $_SERVER, and
+             phpdotenv reads ServerConstAdapter before EnvConstAdapter, so an exported key still
+             wins. <server> is what closes that, and it is applied unconditionally. Both are
+             kept: <server> is what env() reads, <env> is what anything calling getenv() directly
+             would read. LookupVideoTest asserts the value that arrives, so a pin that stops
+             working fails a test rather than quietly running against somebody's real key. -->
+        <server name="YOUTUBE_API_KEY" value="test-api-key"/>
+        <env name="YOUTUBE_API_KEY" value="test-api-key" force="true"/>
     </php>
 </phpunit>

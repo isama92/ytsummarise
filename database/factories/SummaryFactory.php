@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Database\Factories;
 
+use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
 use Illuminate\Database\Eloquent\Factories\Factory;
@@ -46,6 +47,12 @@ class SummaryFactory extends Factory
         return $this->state(fn (): array => [
             'status' => SummaryStatus::Pending,
             'body' => null,
+
+            /*
+             * No title either, which is the shape of a real one: the job looks the video up
+             * and writes both together, so a row that has not been summarised has neither.
+             */
+            'title' => null,
             'started_at' => null,
         ]);
     }
@@ -77,12 +84,18 @@ class SummaryFactory extends Factory
 
     /**
      * A summary whose job gave up.
+     *
+     * With a reason, because every route to a failed row records one; pass a different
+     * SummaryError where the reason is what a test is about. Unknown is the one a job that
+     * threw leaves behind, which is the most ordinary of them.
      */
     public function failed(): static
     {
         return $this->state(fn (): array => [
             'status' => SummaryStatus::Failed,
             'body' => null,
+            'title' => null,
+            'error' => SummaryError::Unknown,
         ]);
     }
 }

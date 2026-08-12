@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Console\Commands\ExpireStalledSummaries;
+use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
 use Illuminate\Console\Scheduling\Schedule;
@@ -26,7 +27,13 @@ test('a summary pending too long is written off', function (): void {
     $this->artisan('summaries:expire')->assertSuccessful();
 
     expect($stale->fresh()?->status)->toBe(SummaryStatus::Failed)
+        /*
+         * And says so in its own words rather than borrowing the ones a job that threw would
+         * leave. This one failed by never finishing, which is worth another attempt.
+         */
+        ->and($stale->fresh()?->error)->toBe(SummaryError::TimedOut)
         ->and($waiting->fresh()?->status)->toBe(SummaryStatus::Pending)
+        ->and($waiting->fresh()?->error)->toBeNull()
         ->and($finished->fresh()?->status)->toBe(SummaryStatus::Ready);
 
     Log::shouldHaveReceived('warning')->once();

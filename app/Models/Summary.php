@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -29,10 +30,11 @@ use Override;
  * @property SummaryStatus $status
  * @property string|null $title
  * @property string|null $body
+ * @property SummaryError|null $error
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
  */
-#[Fillable(['video_id', 'status', 'title', 'body', 'requested_at', 'started_at'])]
+#[Fillable(['video_id', 'status', 'title', 'body', 'error', 'requested_at', 'started_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -76,6 +78,7 @@ class Summary extends Model
     {
         return [
             'status' => SummaryStatus::class,
+            'error' => SummaryError::class,
             'requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
         ];

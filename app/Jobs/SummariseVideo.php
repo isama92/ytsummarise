@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
+use App\Services\YouTube\Actions\LookupVideo;
+use App\Services\YouTube\Enums\VideoPresence;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -121,8 +124,11 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      * outlast the default 60 seconds, and the connection's retry_after must stay larger
      * than the timeout or the queue hands the job to a second worker while the first still
      * runs. The claim below makes that safe rather than expensive, but it is still waste.
+     *
+     * The lookup arrives by method injection rather than through the constructor, so nothing
+     * about it is serialised into the queue payload and a test can swap it in the container.
      */
-    public function handle(): void
+    public function handle(LookupVideo $lookupVideo): void
     {
         /*
          * Loaded here rather than carried, so what this reads is what is in the database at
@@ -199,11 +205,69 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
             return;
         }
 
+        /*
+         * What the video actually is, asked before anything is paid for.
+         *
+         * After the claim, not before it: an unclaimed job has no business spending anybody's
+         * rate limit, and every duplicate would otherwise make the same two requests before
+         * discovering it had nothing to do.
+         */
+        $video = $lookupVideo->execute($summary->video_id);
+
+        $error = match ($video->presence) {
+            VideoPresence::Missing => SummaryError::NotFound,
+            VideoPresence::Unknown => SummaryError::Unreachable,
+            VideoPresence::Found => null,
+        };
+
+        /*
+         * Written off here rather than by throwing, for two reasons. A video that does not
+         * exist is an ordinary outcome and does not deserve a stack trace in the log, and the
+         * work below is never reached - which matters most on the day the sleep becomes a
+         * model call somebody is billed for.
+         */
+        if ($error instanceof SummaryError) {
+            $summary->update([
+                'status' => SummaryStatus::Failed,
+                'error' => $error,
+            ]);
+
+            Log::info('Gave up on a video before summarising it', [
+                'video_id' => $summary->video_id,
+                'error' => $error->value,
+            ]);
+
+            return;
+        }
+
         Sleep::for(3)->seconds();
 
-        $summary->update([
+        /*
+         * Written by id rather than through the instance loaded at the top, because that
+         * instance's idea of the row predates the work and Eloquent only writes what it
+         * believes has changed. summaries:expire can have stamped a reason on the row while
+         * this job was working, and clearing it through a model that never saw it set is a
+         * no-op: the assignment looks clean, the column is left as it was, and a ready summary
+         * keeps an explanation of why it failed.
+         */
+        Summary::query()->whereKey($this->summaryId)->update([
             'status' => SummaryStatus::Ready,
+
+            /*
+             * Written with the summary rather than before it, so the page shows a heading and
+             * the text it belongs to at the same moment instead of a title sitting over a
+             * skeleton. Null when the lookup found the video but was not allowed to name it.
+             */
+            'title' => $video->title,
             'body' => self::PLACEHOLDER_BODY,
+
+            /*
+             * Cleared rather than left alone. summaries:expire can write a reason onto a row
+             * this job is still legitimately working on - its horizon is deliberately blunt -
+             * and a ready summary carrying an explanation of why it failed is a trap for
+             * whatever reads the column next.
+             */
+            'error' => null,
         ]);
     }
 
@@ -234,6 +298,13 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
             $summary->update([
                 'status' => SummaryStatus::Failed,
                 'body' => null,
+
+                /*
+                 * The first explanation wins. A row already carrying a reason was written off
+                 * by summaries:expire, and "it took too long" tells whoever reads it more than
+                 * the throw that followed - which is in the log below either way.
+                 */
+                'error' => $summary->error ?? SummaryError::Unknown,
             ]);
         }
 

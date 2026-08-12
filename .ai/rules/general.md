@@ -30,3 +30,10 @@ When a code review comes back, do not start fixing. Verify the findings, then gi
 The reasons are the point of the rule. A finding that reverses an earlier decision is the user's call, not a patch. A finding that looks small can turn out to be the design (and vice versa), and a batch of fixes already applied is harder to argue with than a list. And the triage itself is the useful artefact - it says which findings were checked and found wrong, which no diff records.
 
 Verifying first is not optional: reviews assert things that are stale, or true only under conditions that do not hold here. Check before repeating a claim, and say plainly which ones were checked.
+
+## Ask before starting or stopping the dev server
+The dev server belongs to whoever is at the keyboard. Do not run `composer run dev`, `php artisan serve`, `npm run dev` or a queue worker, and do not kill one that is already running: say what you need and ask them to start or stop it. The same goes for a spare-port server started "just for a check" - it is still a process left behind in somebody else's session.
+
+If a browser check is wanted and nothing is listening, say so and wait. `ss -ltnp | grep -E ":(8000|5173)"` is the cheap way to find out.
+
+Practical trap when a process does need finding: `pkill -f "artisan serve --port=8123"` kills the shell running it, because that shell's own command line contains the pattern. Exit code 144 with no output is what that looks like. Use `pgrep -af "port=812[3]"` to look, and ask the user to stop it.
