@@ -121,10 +121,30 @@ class CheckAiProvider extends Command
         $url = $this->string($provider, 'url');
         $driver = $this->string($provider, 'driver');
 
-        if ($url === null || ! in_array($driver, self::LISTS_MODELS, true)) {
+        /*
+         * Not offering a model list is not a fault - most drivers have no such endpoint, or
+         * spell it differently, and asking them would fail for reasons having nothing to do
+         * with whether the provider works.
+         */
+        if (! in_array($driver, self::LISTS_MODELS, true)) {
             $this->components->warn('Skipped listing models: this driver does not offer them.');
 
             return true;
+        }
+
+        /*
+         * A missing url is a fault, and telling somebody their driver has no model list when
+         * the truth is that nobody said where it lives would be this command doing the one
+         * thing it exists to prevent: reporting the wrong cause for the most common
+         * misconfiguration there is.
+         */
+        if ($url === null) {
+            $this->components->error(sprintf(
+                'The [%s] provider has no url configured, so there is nothing to ask.',
+                $driver,
+            ));
+
+            return false;
         }
 
         $key = $provider['key'] ?? null;

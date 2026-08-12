@@ -162,6 +162,19 @@ test('a model the endpoint does not list is a warning rather than a failure', fu
         ->assertSuccessful();
 });
 
+/*
+ * The most common misconfiguration there is, and the command used to report it as the driver
+ * not offering a model list - which is the wrong cause for the first thing anybody has to fix.
+ */
+test('a provider with no url says so rather than blaming the driver', function (): void {
+    config()->set('ai.providers.openai-compatible.url');
+
+    $this->artisan('ai:check')
+        ->expectsOutputToContain('has no url configured')
+        ->doesntExpectOutputToContain('does not offer them')
+        ->assertFailed();
+});
+
 test('a driver with no model list is skipped rather than failed', function (): void {
     config()->set('ai.default', 'anthropic');
 

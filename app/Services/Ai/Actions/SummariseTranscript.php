@@ -90,6 +90,6 @@ class SummariseTranscript
 
         assert($response instanceof StructuredAgentResponse);
 
-        return SummarySections::fromModel($response->toArray());
+        return SummarySections::parse($response->toArray());
     }
 }

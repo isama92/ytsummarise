@@ -83,10 +83,15 @@ class Summary extends Model
             'error' => SummaryError::class,
 
             /*
-             * Cast to an array rather than to SummaryOutline, so that reading a row never
-             * depends on the shape the data object expects today. An outline written by an
-             * older release stays readable as what it is; SummaryOutline::from() is applied
-             * where one is being made, not where one is being read back.
+             * A plain array rather than a cast to SummaryOutline, because nothing here would
+             * gain anything from the object. One place builds an outline - SummariseTranscript,
+             * with a constructor - and one place reads it, the page, which receives it as json
+             * either way. Casting would put a hydration step between the two whose only job is
+             * to be kept in step with both.
+             *
+             * It is not a promise that an outline of any other shape will be handled. The page
+             * reads the keys it expects, so the shape written and the shape rendered have to
+             * agree; there is simply no third party in between to disagree with them.
              */
             'outline' => 'array',
             'requested_at' => 'immutable_datetime',

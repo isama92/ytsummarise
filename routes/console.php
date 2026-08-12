@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Console\Commands\ExpireStalledSummaries;
+use App\Console\Commands\PruneSummaries;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -33,3 +34,17 @@ Artisan::command('inspire', function (): void {
  * cannot plausibly be needed is not worth a failure mode that can.
  */
 Schedule::command(ExpireStalledSummaries::class)->hourly();
+
+/*
+ * Daily, and in the middle of the night, because deleting a week-old row is not urgent to the
+ * hour and this is the one scheduled command that writes a lot at once.
+ *
+ * Scheduled rather than left as something to run occasionally, which is the whole point of it:
+ * a retention window nobody enforces is a sentence in a README. What it deletes is other
+ * people's speech, and the argument for keeping that is only ever "nobody got round to
+ * removing it".
+ *
+ * No withoutOverlapping, for the same reasons as above: a day apart and one indexed delete, and
+ * a mutex in the cache is a way to wedge a backstop that cannot plausibly need one.
+ */
+Schedule::command(PruneSummaries::class)->dailyAt('03:00');

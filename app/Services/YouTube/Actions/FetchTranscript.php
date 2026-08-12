@@ -100,6 +100,16 @@ class FetchTranscript
             $result = Process::timeout(config()->integer('summaries.transcript.timeout'))
                 ->run([
                     $binary,
+
+                    /*
+                     * So the command means the same thing on every machine. yt-dlp reads
+                     * /etc/yt-dlp.conf, ~/.config/yt-dlp/config and a portable config before it
+                     * reads any of these arguments, and an option in one of those - a progress
+                     * format, --write-info-json, anything that writes to stdout - puts text
+                     * around the json below and every video comes back unavailable, blaming the
+                     * json rather than the file that broke it.
+                     */
+                    '--ignore-config',
                     '--dump-single-json',
                     '--skip-download',
                     '--no-playlist',
@@ -165,6 +175,16 @@ class FetchTranscript
      * YouTube's own transcription of it. A human-written track is preferred because it is
      * punctuated and spelled, and an automatic one is a wall of lowercase guesses.
      *
+     * Every candidate is carried through to a usable url rather than stopping at the first one
+     * that merely exists. "There is a manual track" and "there is a manual track I can read"
+     * are different questions: a track offered in every format but json3 used to end the search
+     * and report the video as having no captions at all, while its automatic transcription sat
+     * unread beside it - and no_transcript is permanent and does not invite another attempt.
+     *
+     * Likewise the language is a preference rather than a requirement. yt-dlp reports whatever
+     * the uploader set, which is occasionally wrong, and a video whose audio is declared English
+     * while its only tracks are Dutch is still a video with a transcript.
+     *
      * @param  array<string, mixed>  $metadata
      * @return array{url: string, language: string}|null
      */
@@ -173,52 +193,57 @@ class FetchTranscript
         $manual = $this->tracks($metadata, 'subtitles');
         $automatic = $this->tracks($metadata, 'automatic_captions');
 
-        $language = $this->originalLanguage($metadata, $automatic);
+        foreach ($this->languages($metadata, $automatic) as $language) {
+            foreach ([$manual, $automatic] as $tracks) {
+                $url = $this->captionUrl($this->trackIn($tracks, $language));
 
-        if ($language === null) {
-            return null;
-        }
-
-        $entries = $this->trackIn($manual, $language) ?? $this->trackIn($automatic, $language);
-
-        if ($entries === null) {
-            return null;
-        }
-
-        $url = $this->captionUrl($entries);
-
-        return $url === null ? null : ['url' => $url, 'language' => $language];
-    }
-
-    /**
-     * What language the video is in, as a primary subtag.
-     *
-     * yt-dlp reports it outright for almost every video. When it does not, the `-orig` suffix
-     * is the fallback: it is how YouTube labels its transcription of the original audio to tell
-     * it apart from the translations of that sitting beside it, so the key carrying it names
-     * the language the video was in.
-     *
-     * Null when neither is available, which is as good as having no captions - without knowing
-     * what language to ask for there is no way to tell the real track from a translation.
-     *
-     * @param  array<string, mixed>  $metadata
-     * @param  array<array-key, mixed>  $automatic
-     */
-    private function originalLanguage(array $metadata, array $automatic): ?string
-    {
-        $language = $metadata['language'] ?? null;
-
-        if (is_string($language) && $language !== '') {
-            return TranscriptResult::primaryLanguage($language);
-        }
-
-        foreach (array_keys($automatic) as $key) {
-            if (is_string($key) && str_ends_with($key, '-orig')) {
-                return TranscriptResult::primaryLanguage($key);
+                if ($url !== null) {
+                    return ['url' => $url, 'language' => $language];
+                }
             }
         }
 
         return null;
+    }
+
+    /**
+     * The languages to look for a track in, best first.
+     *
+     * What yt-dlp says the video is in comes first, because it is right almost every time and it
+     * is the only thing that can tell a transcription apart from the hundred and fifty
+     * translations of it filed beside it.
+     *
+     * The `-orig` suffix is the fallback, and does the same job from the other side: it is how
+     * YouTube labels its transcription of the original audio, so a key carrying it names the
+     * language the video was really in whatever the uploader declared. Second rather than first,
+     * because it is inferred where the other is stated.
+     *
+     * Deliberately no third entry. "Any track at all" would be the Abkhazian translation of an
+     * English video, which is worse than no summary because nothing downstream could tell.
+     *
+     * @param  array<string, mixed>  $metadata
+     * @param  array<array-key, mixed>  $automatic
+     * @return array<int, string>
+     */
+    private function languages(array $metadata, array $automatic): array
+    {
+        $languages = [];
+
+        $declared = $metadata['language'] ?? null;
+
+        if (is_string($declared) && $declared !== '') {
+            $languages[] = TranscriptResult::primaryLanguage($declared);
+        }
+
+        foreach (array_keys($automatic) as $key) {
+            if (is_string($key) && str_ends_with($key, '-orig')) {
+                $languages[] = TranscriptResult::primaryLanguage($key);
+
+                break;
+            }
+        }
+
+        return array_values(array_unique($languages));
     }
 
     /**
@@ -260,13 +285,18 @@ class FetchTranscript
     }
 
     /**
-     * Where to fetch one track's json3, or null if it is not offered in that format.
+     * Where to fetch one track's json3, or null if there is no track or it is not offered in
+     * that format.
      *
-     * @param  array<int, mixed>  $entries
+     * Takes the null through rather than making every caller check first, because "no track in
+     * this language" and "a track I cannot read" lead to exactly the same place: try the next
+     * candidate.
+     *
+     * @param  array<int, mixed>|null  $entries
      */
-    private function captionUrl(array $entries): ?string
+    private function captionUrl(?array $entries): ?string
     {
-        foreach ($entries as $entry) {
+        foreach ($entries ?? [] as $entry) {
             if (! is_array($entry)) {
                 continue;
             }
@@ -303,7 +333,18 @@ class FetchTranscript
              */
             Log::warning('Could not reach a caption track', [
                 'host' => parse_url($url, PHP_URL_HOST),
-                'exception' => $exception->getMessage(),
+
+                /*
+                 * Trimmed at " for ", which is where the client appends the url it was trying.
+                 * The host above is deliberately taken without its query, and logging the raw
+                 * message would put the whole thing back: a caption url carries a signature and
+                 * an expiry and runs to several hundred characters.
+                 *
+                 * The same trim LookupVideo does, for the same reason - see .ai/rules/services.md
+                 * - except that this is Illuminate's client rather than Saloon's sender. Both
+                 * append the url the same way, and neither redacts a query string.
+                 */
+                'exception' => Str::before($exception->getMessage(), ' for '),
             ]);
 
             return null;

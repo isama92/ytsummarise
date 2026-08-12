@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Services\YouTube\Actions\FetchTranscript;
 use App\Services\YouTube\Enums\TranscriptPresence;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Process\FakeProcessResult;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\Http;
@@ -84,7 +85,14 @@ test('the right video is asked about, without a shell', function (): void {
             && str_contains($command, '--dump-single-json')
             && str_contains($command, '--skip-download')
             /* Or a link that happens to name a playlist fetches every video in it. */
-            && str_contains($command, '--no-playlist');
+            && str_contains($command, '--no-playlist')
+            /*
+             * And the command means the same thing on every machine. yt-dlp reads
+             * /etc/yt-dlp.conf and ~/.config/yt-dlp/config before any of these arguments, so
+             * without this a developer's own config file silently rewrites what the queue
+             * worker runs - and anything in it that writes to stdout breaks the json.
+             */
+            && str_contains($command, '--ignore-config');
     });
 });
 
@@ -268,6 +276,37 @@ test('a yt-dlp that answers with something that is not json leaves the transcrip
     Log::shouldHaveReceived('warning')->once();
 });
 
+/*
+ * A caption url is signed and carries an expiry, and the client appends the whole thing to its
+ * exception message - so logging that message raw puts back exactly what taking the host without
+ * its query was there to keep out. The same trap .ai/rules/services.md records for Saloon, on
+ * the other http client.
+ */
+test('a caption url does not reach the log when the track cannot be reached', function (): void {
+    Log::spy();
+
+    Process::fake(fn () => Process::result(metadata(
+        'en',
+        subtitles: ['en' => track('https://www.youtube.com/api/timedtext?signature=s3cr3t-signature')],
+    )));
+
+    Http::fake([
+        'www.youtube.com/api/timedtext*' => fn () => throw new ConnectionException(
+            'cURL error 28: Operation timed out for https://www.youtube.com/api/timedtext?signature=s3cr3t-signature',
+        ),
+    ]);
+
+    expect(transcript()->execute('dQw4w9WgXcQ')->presence)->toBe(TranscriptPresence::Unavailable);
+
+    Log::shouldHaveReceived('warning')->withArgs(function (string $message, array $context): bool {
+        expect(json_encode($context))->not->toContain('s3cr3t-signature');
+
+        /* And still says what went wrong, which is the half worth keeping. */
+        return str_contains($context['exception'], 'Operation timed out')
+            && $context['host'] === 'www.youtube.com';
+    })->once();
+});
+
 test('a caption track that does not arrive leaves the transcript unavailable', function (): void {
     Log::spy();
 
@@ -300,8 +339,88 @@ test('a caption track answering with something unusable leaves the transcript un
 });
 
 /*
- * A track offered in every format but the one that is data. Missing rather than unavailable:
- * the captions are there and this cannot read them, which asking again will not change.
+ * "There is a manual track" and "there is a manual track I can read" are different questions,
+ * and conflating them wrote videos off as having no subtitles while their automatic
+ * transcription sat unread beside them - permanently, since no_transcript does not invite
+ * another attempt.
+ */
+test('a manual track in an unreadable format falls through to the automatic one', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        'en',
+        subtitles: ['en' => [['ext' => 'vtt', 'url' => 'https://www.youtube.com/api/timedtext?written=1']]],
+        automatic: ['en' => track('https://www.youtube.com/api/timedtext?guessed=1')],
+    )));
+
+    captions([['segs' => [['utf8' => 'The guessed one.']]]]);
+
+    $result = transcript()->execute('dQw4w9WgXcQ');
+
+    expect($result->presence)->toBe(TranscriptPresence::Found)
+        ->and($result->text)->toBe('The guessed one.');
+
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), 'guessed=1'));
+});
+
+/* The same, for a language listed with no entries at all rather than with unusable ones. */
+test('a manual track with nothing in it falls through to the automatic one', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        'en',
+        subtitles: ['en' => []],
+        automatic: ['en' => track('https://www.youtube.com/api/timedtext?guessed=1')],
+    )));
+
+    captions([['segs' => [['utf8' => 'The guessed one.']]]]);
+
+    expect(transcript()->execute('dQw4w9WgXcQ')->presence)->toBe(TranscriptPresence::Found);
+});
+
+/*
+ * yt-dlp reports whatever the uploader set as the audio language, which is occasionally wrong.
+ * A video declared English whose only tracks are Dutch is still a video with a transcript, so
+ * the declared language is a preference and the -orig suffix is the fallback behind it.
+ */
+test('a video whose declared language has no track falls back to the original one', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        'en',
+        automatic: [
+            'ab' => track('https://www.youtube.com/api/timedtext?lang=ab'),
+            'nl-orig' => track('https://www.youtube.com/api/timedtext?lang=nl-orig'),
+        ],
+    )));
+
+    captions([['segs' => [['utf8' => 'De originele.']]]]);
+
+    $result = transcript()->execute('dQw4w9WgXcQ');
+
+    expect($result->presence)->toBe(TranscriptPresence::Found)
+        /* And read as Dutch, so it is translated afterwards rather than taken for English. */
+        ->and($result->language)->toBe('nl');
+
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), 'lang=nl-orig'));
+});
+
+/*
+ * The fallback stops there, deliberately. "Any track at all" would be the Abkhazian translation
+ * of an English video, which is worse than no summary because nothing downstream could tell.
+ */
+test('a video with only translations and no original track has no transcript', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        'en',
+        automatic: [
+            'ab' => track('https://www.youtube.com/api/timedtext?lang=ab'),
+            'nl' => track('https://www.youtube.com/api/timedtext?lang=nl'),
+        ],
+    )));
+
+    expect(transcript()->execute('dQw4w9WgXcQ')->presence)->toBe(TranscriptPresence::Missing);
+
+    Http::assertNothingSent();
+});
+
+/*
+ * A track offered in every format but the one that is data, with nothing else to fall back to.
+ * Missing rather than unavailable: the captions are there and this cannot read them, which
+ * asking again will not change.
  */
 test('a track offered in no usable format counts as having none', function (): void {
     Process::fake(fn () => Process::result(metadata(

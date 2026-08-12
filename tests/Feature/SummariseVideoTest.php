@@ -96,6 +96,13 @@ test('a video that does not exist is failed rather than summarised', function ()
      */
     Process::assertNothingRan();
     ExtractIdeas::assertNeverPrompted();
+
+    /*
+     * And it says so once in the log, which is the only trace a refusal leaves for anybody
+     * looking at a worker rather than at the page. Asserted here because giveUp() is shared by
+     * every cheap refusal, so this covers the reason lines for all of them.
+     */
+    Log::shouldHaveReceived('info')->once();
 });
 
 /*
@@ -565,15 +572,41 @@ test('the queue cannot reserve the job again while it is still running', functio
 });
 
 /*
- * The budgets inside the job have to fit inside the job's own, or the thing that gives up first
- * is the worker - which stops the job mid-write and leaves the failure handler guessing at
- * "unknown" instead of a reason somebody can act on.
+ * The budgets inside the job have to fit inside the job's own *together*, or the thing that
+ * gives up first is the worker - which stops the job mid-write and leaves the failure handler
+ * guessing at "unknown" instead of a reason somebody can act on.
+ *
+ * Together, and not each on its own, which is the version of this test that shipped first and
+ * passed while the sum overflowed by four minutes. One video can run two transcript steps
+ * (asking yt-dlp, then fetching the track it names) and three prompts (the ideas, the summary,
+ * and translating it), and with the defaults at the time that came to 2040 seconds against an
+ * 1800 second job.
  */
-test('no single step may outlast the job that runs it', function (): void {
-    $timeout = config()->integer('summaries.timeout');
+test('the job budget covers every step it runs, added up', function (): void {
+    $worstCase = (2 * config()->integer('summaries.transcript.timeout'))
+        + (3 * config()->integer('summaries.model_timeout'));
 
-    expect(config()->integer('summaries.model_timeout'))->toBeLessThanOrEqual($timeout)
-        ->and(config()->integer('summaries.transcript.timeout'))->toBeLessThanOrEqual($timeout);
+    expect(config()->integer('summaries.timeout'))->toBeGreaterThan($worstCase);
+});
+
+/*
+ * And it goes on holding when somebody changes one, which is the property that makes the
+ * assertion above more than a snapshot of today's numbers. The config file is re-evaluated
+ * rather than the container's copy read, because the derivation happens as the file is read.
+ */
+test('raising a step budget raises the job budget with it', function (): void {
+    putenv('SUMMARY_MODEL_TIMEOUT=1800');
+
+    try {
+        $summaries = require config_path('summaries.php');
+    } finally {
+        putenv('SUMMARY_MODEL_TIMEOUT');
+    }
+
+    expect($summaries['model_timeout'])->toBe(1800)
+        ->and($summaries['timeout'])->toBeGreaterThan(
+            (2 * $summaries['transcript']['timeout']) + (3 * $summaries['model_timeout']),
+        );
 });
 
 /*

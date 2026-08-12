@@ -1,16 +1,27 @@
 <?php
 
-$timeout = max(60, (int) env('SUMMARY_TIMEOUT', 1800));
+$modelTimeout = max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600));
+
+$transcriptTimeout = max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120));
 
 /*
- * Both of the budgets below are capped at the job's own, because neither of them is allowed
- * to be the reason a worker kills the job. Whichever runs long should give up and be recorded
- * as a reason somebody can read, rather than leaving the worker to stop the job mid-write and
- * the failure handler to guess at "unknown".
+ * The job's budget has to cover the budgets of everything inside it, or the worker is what
+ * gives up first - and that is the one outcome none of these numbers wants. A step that runs
+ * out of time stops and records a reason somebody can read; a worker that runs out of patience
+ * kills the job mid-write and leaves the failure handler guessing at "unknown".
+ *
+ * So it is derived rather than trusted, and SUMMARY_TIMEOUT is a floor rather than the value.
+ * Capping the steps instead would have been the other way round, and worse: somebody who asks
+ * for a ten minute model budget would silently get eight.
+ *
+ * The worst case is one video: two transcript steps (asking yt-dlp, then fetching the track it
+ * names) and three prompts (the ideas, the summary, and translating it for a video that was not
+ * in English). The minute on the end covers the lookup, which has its own short timeouts in
+ * app/Services/YouTube, and the handful of writes around the work.
  */
-$modelTimeout = min($timeout, max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600)));
+$steps = (2 * $transcriptTimeout) + (3 * $modelTimeout) + 60;
 
-$transcriptTimeout = min($timeout, max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120)));
+$timeout = max($steps, max(60, (int) env('SUMMARY_TIMEOUT', 1800)));
 
 return [
 
@@ -38,8 +49,13 @@ return [
     | retry_after below a job's timeout has the queue hand the job to a second
     | worker while the first is still running.
     |
-    | Floored at a minute rather than trusted blindly, so an empty or
-    | unparseable value cannot leave the work with no time to run in.
+    | SUMMARY_TIMEOUT is a floor rather than the value. What is actually used is
+    | whichever is larger: what was asked for, or what the steps inside the job
+    | are between them allowed to take. See the derivation at the top of this
+    | file for why that way round.
+    |
+    | Also floored at a minute, so an empty or unparseable value cannot leave
+    | the work with no time to run in.
     |
     */
 
@@ -105,9 +121,11 @@ return [
     |
     | Ten minutes by default, which is slow for a hosted provider and unhurried
     | for a model on somebody's own hardware. Floored at thirty seconds so an
-    | unparseable value cannot leave a prompt no time to answer in, and capped at
-    | the job's timeout so it can never be the thing still waiting when the
-    | worker gives up.
+    | unparseable value cannot leave a prompt no time to answer in.
+    |
+    | Not capped. Raising this raises the job's own timeout to match rather than
+    | being quietly reduced to fit inside it, which is the whole point of
+    | deriving that one from these.
     |
     */
 
@@ -128,9 +146,9 @@ return [
     | both are small requests, and the ceiling is there for a yt-dlp that has
     | hung rather than as a target.
     |
-    | Capped at the job's timeout for the same reason as the model budget above:
-    | a transcript that never arrives should fail as a transcript that never
-    | arrived, not as a worker killing the job.
+    | Both of those are counted into the job's timeout, so a transcript that
+    | never arrives fails as a transcript that never arrived rather than as a
+    | worker killing the job around it.
     |
     */
 
@@ -138,5 +156,32 @@ return [
         'binary' => env('YT_DLP_BINARY', 'yt-dlp'),
         'timeout' => $transcriptTimeout,
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Retention
+    |--------------------------------------------------------------------------
+    |
+    | How many days a summary is kept before summaries:prune deletes it, counted
+    | from when the row was created.
+    |
+    | This exists because of what is stored beside the summary rather than
+    | because of the summary. A transcript is a recording of somebody speaking,
+    | written down - other people's words, kept by us, and nobody asked them.
+    | Keeping it forever because there was no reason to delete it is exactly the
+    | storage limitation the AVG is about, so the window is short by default and
+    | the deletion runs whether or not anybody remembers to ask for it.
+    |
+    | Deliberately not switchable off. A value of zero would be the setting
+    | everybody reaches for the first time a summary they wanted disappears, and
+    | it is the one setting that turns a retention policy into a note in a
+    | README. A week is floored to a day rather than to nothing.
+    |
+    | Deleting a summary is not destructive in the way it sounds: asking for the
+    | same video again produces a new one. What it costs is the time to make it.
+    |
+    */
+
+    'retention_days' => max(1, (int) env('SUMMARY_RETENTION_DAYS', 7)),
 
 ];

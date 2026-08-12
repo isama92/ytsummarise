@@ -30,6 +30,14 @@ final class SummarySections extends Data
     /**
      * One of these out of whatever a model actually returned.
      *
+     * Named parse() rather than fromModel(), which is the obvious name and a trap. laravel-data
+     * registers every public static method beginning with "from" as a magic creation method, so
+     * a fromModel(array) becomes what SummarySections::from(array) quietly resolves to - and
+     * hydrating a stored outline would then run it through the tolerance below and throw on one
+     * whose headline had gone missing, which is the opposite of what reading a row should do.
+     * Verified rather than assumed: under that name,
+     * SummarySections::from(['headline' => '', ...]) threw out of here.
+     *
      * Defensive on purpose, and not because the schema is optional. The structured output
      * contract is declared and hosted providers honour it, but this application is pointed at
      * whatever endpoint AI_PROVIDER names - which may be a local model behind a gateway that
@@ -44,7 +52,7 @@ final class SummarySections extends Data
      *
      * @param  array<array-key, mixed>  $response
      */
-    public static function fromModel(array $response): self
+    public static function parse(array $response): self
     {
         $headline = $response['headline'] ?? null;
         $headline = is_string($headline) ? trim($headline) : '';

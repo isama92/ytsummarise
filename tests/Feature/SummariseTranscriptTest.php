@@ -7,6 +7,7 @@ use App\Services\Ai\Agents\CreateSummary;
 use App\Services\Ai\Agents\ExtractIdeas;
 use App\Services\Ai\Agents\TranslateSummary;
 use App\Services\Ai\Data\SummaryOutline;
+use App\Services\Ai\Data\SummarySections;
 use App\Services\YouTube\Data\TranscriptResult;
 use Laravel\Ai\Prompts\AgentPrompt;
 
@@ -156,6 +157,29 @@ test('a summary with no headline is a failure rather than a thin summary', funct
     'only whitespace' => ['   '],
     'the wrong type' => [42],
 ]);
+
+/*
+ * The tolerance is for reading a model's answer, not for reading a row back.
+ *
+ * laravel-data registers every public static method beginning with "from" as a magic creation
+ * method, so calling this one fromModel() made SummarySections::from() resolve to it - and
+ * hydrating a stored outline would run through the filtering and throw on one whose headline
+ * had gone missing, which is the opposite of what reading a row should do. Renaming it to
+ * parse() is what keeps the two apart, and this is what notices if it is ever renamed back.
+ */
+test('hydrating a stored summary does not run the model tolerance', function (): void {
+    $sections = SummarySections::from([
+        'headline' => '',
+        'points' => ['A point'],
+        'takeaways' => [],
+    ]);
+
+    expect($sections->headline)->toBeEmpty();
+
+    /* And the method that does apply it is still there, under a name laravel-data ignores. */
+    expect(fn (): SummarySections => SummarySections::parse(['headline' => '', 'points' => [], 'takeaways' => []]))
+        ->toThrow(UnexpectedValueException::class);
+});
 
 test('a summary missing some of its lines keeps the rest', function (): void {
     ExtractIdeas::fake(fn (): string => 'An idea');

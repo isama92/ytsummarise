@@ -91,6 +91,24 @@ short videos. The other passes are nowhere near the limit — they read the idea
 the transcript, which is a thousand tokens or so — so the first pass is the only one worth
 sizing for.
 
+### Retention
+
+Summaries are deleted after **seven days**, along with the transcripts stored beside them:
+
+```ini
+SUMMARY_RETENTION_DAYS=7
+```
+
+`summaries:prune` does it, scheduled daily at 03:00, and it is not a maintenance convenience.
+A transcript is a recording of somebody speaking, written down and kept by us, and nobody
+asked them; keeping it indefinitely because deleting it was never anybody's job is the
+storage limitation the AVG is about. So the window is short by default, it runs on a
+schedule rather than waiting to be remembered, and it cannot be switched off — a value of
+zero is floored to one day.
+
+Deleting a summary is less destructive than it sounds. Asking for the same video again
+produces a new one; what it costs is the time to make it.
+
 Transcripts are stored, so you can measure your own corpus rather than trusting the table:
 
 ```sh

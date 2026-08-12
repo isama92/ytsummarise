@@ -20,7 +20,7 @@ import { elapsedSince } from '@/lib/elapsed';
 import { errorKeyOf, stageKeyOf } from '@/lib/summary';
 import { cn } from '@/lib/utils';
 import { extractVideoId } from '@/lib/youtube';
-import type { Summary, SummarySections } from '@/types';
+import type { Summary, SummaryOutline, SummarySections } from '@/types';
 
 type HomeProps = {
     videoId: string | null;
@@ -175,30 +175,37 @@ function SummaryPoll() {
 }
 
 /**
- * One language's worth of summary: the sentence, then the two lists.
+ * Which level the summary's own headings sit at.
  *
- * Every heading is an h3, including the "In English" divider above a translated version, so a
- * summary that has been translated reads as one flat run of sections rather than as two nested
- * ones. Nesting would be more precise, but the outer heading it needs does not exist: there is
- * a name for the English version and none for the original, because the only thing known about
- * that language is its subtag.
+ * Every heading inside a summary is at the same level, including the "In English" divider above
+ * a translated version, so a translated summary reads as one flat run of sections rather than as
+ * two nested ones. Nesting would be more precise, but the outer heading it needs does not exist:
+ * there is a name for the English version and none for the original, because the only thing
+ * known about that language is its subtag.
  *
- * The lists are rendered only when they have something in them. A model that returns nine points
- * instead of ten has written a usable summary, and one that returns none of them should leave a
- * heading out rather than stand one over nothing.
+ * Which level that is follows the video's title. A video the lookup found but was not allowed to
+ * name has none, so the `h2` above the summary is not rendered and a fixed `h3` would follow the
+ * page's `h1` directly - and a skipped level is what heading navigation reports to a screen
+ * reader.
  */
+type HeadingLevel = 'h2' | 'h3';
+
 function SummarySection({
     heading,
+    level,
     children,
 }: {
     heading: string;
+    level: HeadingLevel;
     children: React.ReactNode;
 }) {
+    const Heading = level;
+
     return (
         <section>
-            <h3 className="mb-2 text-sm font-medium tracking-wide text-muted-foreground uppercase">
+            <Heading className="mb-2 text-sm font-medium tracking-wide text-muted-foreground uppercase">
                 {heading}
-            </h3>
+            </Heading>
 
             {children}
         </section>
@@ -219,23 +226,99 @@ function SummaryLines({ lines }: { lines: string[] }) {
     );
 }
 
-function SummaryVersion({ sections }: { sections: SummarySections }) {
+/**
+ * The whole summary: the original, and an English translation of it where there is one.
+ *
+ * The heading level is worked out once here rather than at each of the three places that needs
+ * it, and the outline is checked rather than trusted. Nothing writes a row without an original,
+ * so that is not a case anybody expects - but this page has no error boundary, and reaching into
+ * a missing object while rendering takes the whole screen down rather than the one section that
+ * is wrong.
+ */
+function SummaryOutlineView({
+    outline,
+    hasTitle,
+}: {
+    outline: SummaryOutline | null;
+    hasTitle: boolean;
+}) {
+    const t = useTranslate();
+
+    if (!outline?.original) {
+        return null;
+    }
+
+    /* Under the video's own h2 when it has one, and under the page's h1 when it does not. */
+    const level: HeadingLevel = hasTitle ? 'h3' : 'h2';
+    const Heading = level;
+
+    return (
+        <div className="space-y-8">
+            <SummaryVersion sections={outline.original} level={level} />
+
+            {/*
+             * Only for a video that was not in English, which is why it is a real null on the
+             * server rather than a copy of the version above: showing the same summary twice is
+             * what filling it in would mean.
+             *
+             * Below the original rather than above it. The words were said in that language, so
+             * that is the summary of what was actually said; this one is a step further away.
+             */}
+            {outline.english && (
+                <div
+                    className="space-y-6 border-t pt-8"
+                    data-test="summary-english"
+                >
+                    <Heading className="text-sm font-medium tracking-wide text-muted-foreground uppercase">
+                        {t('summaries.translation')}
+                    </Heading>
+
+                    <SummaryVersion sections={outline.english} level={level} />
+                </div>
+            )}
+        </div>
+    );
+}
+
+/**
+ * One language's worth of summary: the sentence, then the two lists.
+ *
+ * The lists are rendered only when they have something in them. A model that returns nine points
+ * instead of ten has written a usable summary, and one that returns none of them should leave a
+ * heading out rather than stand one over nothing.
+ */
+function SummaryVersion({
+    sections,
+    level,
+}: {
+    sections: SummarySections;
+    level: HeadingLevel;
+}) {
     const t = useTranslate();
 
     return (
         <div className="space-y-6">
-            <SummarySection heading={t('summaries.sections.headline')}>
+            <SummarySection
+                heading={t('summaries.sections.headline')}
+                level={level}
+            >
                 <p className="leading-relaxed">{sections.headline}</p>
             </SummarySection>
 
-            {sections.points.length > 0 && (
-                <SummarySection heading={t('summaries.sections.points')}>
+            {sections.points?.length > 0 && (
+                <SummarySection
+                    heading={t('summaries.sections.points')}
+                    level={level}
+                >
                     <SummaryLines lines={sections.points} />
                 </SummarySection>
             )}
 
-            {sections.takeaways.length > 0 && (
-                <SummarySection heading={t('summaries.sections.takeaways')}>
+            {sections.takeaways?.length > 0 && (
+                <SummarySection
+                    heading={t('summaries.sections.takeaways')}
+                    level={level}
+                >
                     <SummaryLines lines={sections.takeaways} />
                 </SummarySection>
             )}
@@ -612,52 +695,12 @@ export default function Home({ videoId, summary }: HomeProps) {
                                                     </h2>
                                                 )}
 
-                                                {summary.outline && (
-                                                    <div className="space-y-8">
-                                                        <SummaryVersion
-                                                            sections={
-                                                                summary.outline
-                                                                    .original
-                                                            }
-                                                        />
-
-                                                        {/*
-                                                         * Only for a video that was not in
-                                                         * English, which is why it is a real
-                                                         * null on the server rather than a
-                                                         * copy of the version above: showing
-                                                         * the same summary twice is what
-                                                         * filling it in would mean.
-                                                         *
-                                                         * Below the original rather than
-                                                         * above it. The words were said in
-                                                         * that language, so that is the
-                                                         * summary of what was actually said;
-                                                         * this one is a step further away.
-                                                         */}
-                                                        {summary.outline
-                                                            .english && (
-                                                            <div
-                                                                className="space-y-6 border-t pt-8"
-                                                                data-test="summary-english"
-                                                            >
-                                                                <h3 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">
-                                                                    {t(
-                                                                        'summaries.translation',
-                                                                    )}
-                                                                </h3>
-
-                                                                <SummaryVersion
-                                                                    sections={
-                                                                        summary
-                                                                            .outline
-                                                                            .english
-                                                                    }
-                                                                />
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
+                                                <SummaryOutlineView
+                                                    outline={summary.outline}
+                                                    hasTitle={
+                                                        summary.title != null
+                                                    }
+                                                />
                                             </div>
                                         )}
 

@@ -334,9 +334,18 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     /**
      * Stop, with a reason somebody can read.
      *
-     * Through the instance rather than by key, unlike the writes above: this runs before
-     * anything slow, so the row it holds is still current, and there is no cleared column here
-     * whose staleness would turn into a silent no-op.
+     * Through the instance rather than by key, unlike the final write: every column named here
+     * differs from what that instance holds, so Eloquent has no chance to decide nothing
+     * changed. Status goes from pending to failed and the reason from null to something, both
+     * on every path that reaches this.
+     *
+     * It does overwrite a reason another process may have recorded, which is the opposite of
+     * what failed() does, and that asymmetry is deliberate. summaries:expire can write a row
+     * off as timed_out while this job is still working - the transcript branch below reaches
+     * here after a subprocess and an http request, so the window is real - and "that video has
+     * no subtitles" is both truer and more useful than "this took too long". The job has
+     * looked; the horizon only guessed. failed() keeps the first reason instead because a job
+     * that threw has nothing better to offer than "unknown".
      */
     private function giveUp(Summary $summary, SummaryError $error): void
     {
