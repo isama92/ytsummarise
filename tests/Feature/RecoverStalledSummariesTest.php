@@ -52,10 +52,60 @@ test('a summary waiting its turn is queued again rather than written off', funct
 
     Queue::assertPushed(SummariseVideo::class, 1);
 })->with([
+    /*
+     * All far past the timeout, which is what the old horizon compared against and what made
+     * every one of these a write-off, and all inside the far longer window a queue is given
+     * to start something at all.
+     */
     'asked for a moment ago' => '5 seconds',
     'asked for an hour ago' => '1 hour',
-    'asked for a week ago' => '1 week',
+    'asked for most of a day' => '20 hours',
 ]);
+
+/*
+ * The bound on the rule above. Queueing a waiting summary again is right for as long as
+ * there is reason to think a worker will get to it, and a day of a queue never once starting
+ * this job is not a busy queue - it is one that is not running, and somebody should be told
+ * rather than left watching a spinner all week.
+ */
+test('a summary nothing ever started is eventually written off', function (): void {
+    Log::spy();
+    Queue::fake();
+
+    $waiting = Summary::factory()->pending()->create([
+        'requested_at' => Date::now()->subSeconds(config()->integer('summaries.abandon_after') + 1),
+    ]);
+
+    $this->artisan('summaries:recover')->assertSuccessful();
+
+    expect($waiting->fresh()?->status)->toBe(SummaryStatus::Failed);
+
+    /* And not queued again on the way out. */
+    Queue::assertNothingPushed();
+
+    Log::shouldHaveReceived('warning')->once();
+});
+
+test('the two horizons are separate, and waiting is given far longer than working', function (): void {
+    expect(config()->integer('summaries.abandon_after'))
+        ->toBeGreaterThan(config()->integer('summaries.timeout'));
+
+    Queue::fake();
+
+    /*
+     * Past the working horizon but nowhere near the waiting one: still queued again, because
+     * how long a job may take says nothing about how long it may wait for a worker.
+     */
+    $waiting = Summary::factory()->pending()->create([
+        'requested_at' => Date::now()->subSeconds(config()->integer('summaries.timeout') + 1),
+    ]);
+
+    $this->artisan('summaries:recover')->assertSuccessful();
+
+    expect($waiting->fresh()?->status)->toBe(SummaryStatus::Pending);
+
+    Queue::assertPushed(SummariseVideo::class, 1);
+});
 
 test('a summary a worker is still working on is left alone entirely', function (): void {
     Queue::fake();

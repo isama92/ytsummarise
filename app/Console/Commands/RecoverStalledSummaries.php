@@ -10,6 +10,7 @@ use App\Models\Summary;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -42,7 +43,9 @@ class RecoverStalledSummaries extends Command
     public function handle(): void
     {
         $dispatched = $this->requeueUnstarted();
-        $failed = $this->failAbandoned();
+
+        $failed = $this->failAbandoned()
+            + $this->failNeverStarted();
 
         if ($dispatched === 0 && $failed === 0) {
             $this->components->info('Nothing to recover.');
@@ -105,7 +108,37 @@ class RecoverStalledSummaries extends Command
      */
     private function failAbandoned(): int
     {
-        $videoIds = Summary::query()->stalled()->pluck('video_id', 'id');
+        return $this->writeOff(
+            Summary::query()->stalled(),
+            'Failed summaries a worker abandoned',
+            'abandoned',
+        );
+    }
+
+    /**
+     * Write off every summary nothing ever started, for long enough that nothing will.
+     *
+     * The backstop to requeueUnstarted above. Queueing a waiting summary again is right for
+     * as long as there is any reason to think a worker will get to it, and this is where
+     * that stops: a queue that has not once started this job in a day is not busy.
+     */
+    private function failNeverStarted(): int
+    {
+        return $this->writeOff(
+            Summary::query()->neverStarted(),
+            'Failed summaries nothing ever started',
+            'never started',
+        );
+    }
+
+    /**
+     * Mark a set of pending summaries failed, and say so.
+     *
+     * @param  Builder<Summary>  $rows
+     */
+    private function writeOff(Builder $rows, string $message, string $describes): int
+    {
+        $videoIds = $rows->pluck('video_id', 'id');
 
         if ($videoIds->isEmpty()) {
             return 0;
@@ -132,18 +165,20 @@ class RecoverStalledSummaries extends Command
         }
 
         /*
-         * A warning where the requeue above is a debug line: every row here is a worker
-         * that died holding a job, and a steady trickle of them is a problem with the
-         * workers rather than with any one video.
+         * A warning where the requeue is a debug line. Every row here is either a worker
+         * that died holding a job or a queue that never picked one up, and a steady trickle
+         * of either is a problem with the workers rather than with any one video.
          */
-        Log::warning('Failed summaries a worker abandoned', [
+        Log::warning($message, [
             'failed' => $failed,
-            'candidates' => $videoIds->values()->all(),
+            'video_ids' => $videoIds->values()->take(self::VIDEO_IDS_LOGGED)->all(),
+            'video_ids_truncated' => $failed > self::VIDEO_IDS_LOGGED,
         ]);
 
         $this->components->warn(sprintf(
-            'Failed %d abandoned %s.',
+            'Failed %d %s %s.',
             $failed,
+            $describes,
             str('summary')->plural($failed),
         ));
 

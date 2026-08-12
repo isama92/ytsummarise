@@ -58,16 +58,23 @@ class SummaryController extends Controller
         }
 
         /*
-         * A failed row starts over, and so does one whose worker went missing mid job. The
-         * clock restarts with them, and so does the claim: leaving started_at set would make
-         * the row unclaimable, and every job queued for it from then on would find somebody
-         * else apparently working and return having done nothing.
+         * Three ways the attempt on this row is over: it failed, its worker went missing
+         * mid job, or nothing ever picked it up and enough time has passed to stop
+         * expecting anything to. Each starts over, and the clock restarts with them.
          *
-         * A row somebody is already working on, or one still waiting its turn in the queue,
-         * is left exactly as it is. Whoever asked first is already waiting, and restarting
-         * their clock would mislead them; the dispatch below is what joins them to it.
+         * So does the claim: leaving started_at set would make the row unclaimable, and
+         * every job queued for it from then on would find somebody else apparently working
+         * and return having done nothing.
+         *
+         * A row somebody is working on, or one still plausibly waiting its turn, is left
+         * exactly as it is. Whoever asked first is already waiting, and restarting their
+         * clock would mislead them; the dispatch below is what joins them to it.
          */
-        if ($summary->status === SummaryStatus::Failed || $summary->isStalled()) {
+        if (
+            $summary->status === SummaryStatus::Failed
+            || $summary->isStalled()
+            || $summary->hasWaitedTooLong()
+        ) {
             $summary->update([
                 'status' => SummaryStatus::Pending,
                 'body' => null,

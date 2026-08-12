@@ -1,5 +1,7 @@
 <?php
 
+$timeout = max(60, (int) env('SUMMARY_TIMEOUT', 1800));
+
 return [
 
     /*
@@ -33,6 +35,32 @@ return [
     |
     */
 
-    'timeout' => max(60, (int) env('SUMMARY_TIMEOUT', 1800)),
+    'timeout' => $timeout,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Abandon After
+    |--------------------------------------------------------------------------
+    |
+    | How long a summary may wait for a worker to start it at all, in seconds,
+    | before it is written off.
+    |
+    | A backstop and nothing else. Waiting is ordinary - a job sits behind every
+    | job ahead of it - so the recovery command queues a waiting summary again
+    | rather than giving up on it, and this is only the point at which that
+    | stops being a backlog and starts being a worker that is not running. A day
+    | of a queue never once starting a job is not a busy queue.
+    |
+    | Which is why it can be generous where the timeout above cannot. That one
+    | has to be short enough to notice a dead worker; this one only has to be
+    | longer than any real backlog, and being wrong about it costs a page that
+    | waits too long rather than a summary written off mid flight.
+    |
+    | Floored at the timeout, because a summary cannot be given up on for never
+    | starting sooner than one that started would be given up on for stopping.
+    |
+    */
+
+    'abandon_after' => max($timeout, (int) env('SUMMARY_ABANDON_AFTER', 86400)),
 
 ];
