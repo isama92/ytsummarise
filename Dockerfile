@@ -128,6 +128,26 @@ FROM dunglas/frankenphp:php8.5-alpine AS prod
 # which a compiled composer package would not.
 RUN install-php-extensions pdo_pgsql pcntl redis
 
+# yt-dlp, without which this image can accept a video and never summarise one: it is the only
+# thing here that can find a caption track, and no captions means no summary. FetchTranscript
+# looks it up on PATH by default (YT_DLP_BINARY), and the horizon container is where it runs -
+# but all three services come off this one image, so it lands in all of them.
+#
+# Metadata only, so no ffmpeg: the command is --dump-single-json --skip-download, and the
+# caption track it names is then fetched over plain http by the application itself.
+#
+# The cost is about 117MB, nearly all of it the python this pulls in - real against an Alpine
+# runtime chosen to save 570MB, and still comfortably ahead. The standalone musllinux build is
+# a third of the size, but it wants a pinned version and a checksum, and a pin is the thing
+# most likely to go stale here. That matters more than the megabytes: yt-dlp breaks whenever
+# YouTube changes its player, so the version wants to move on every rebuild, which is exactly
+# what an unpinned apk package does and a vendored binary does not.
+#
+# Run once at build so a package that installed but cannot start - a broken python, a bad
+# release - fails here rather than as an "unavailable" transcript weeks later.
+RUN apk add --no-cache yt-dlp \
+    && yt-dlp --version
+
 # The image ships php.ini-development and php.ini-production but activates neither, so
 # PHP would run on built-in defaults - display_errors among them. Put the production one
 # in place before layering opcache settings over it.

@@ -20,11 +20,17 @@ Three steps, and only the last two involve a model.
 
 ### Setting it up
 
-`yt-dlp` has to be on `PATH` — on the queue worker, not only on your own machine:
+`yt-dlp` has to be on `PATH`. The published image ships it, so this is a local development
+step; set `YT_DLP_BINARY` to an absolute path if yours lives somewhere unusual.
 
 ```sh
 yt-dlp --version
 ```
+
+Keep it current. It is the one dependency here that breaks on somebody else's schedule —
+YouTube changes its player and yt-dlp follows, so a version left alone for months eventually
+stops finding caption tracks and every summary fails as "unavailable". The image picks up
+whatever Alpine has each time it is rebuilt.
 
 Then point the application at a model. Any provider in `config/ai.php` that generates text
 will do; `cohere`, `jina` and `voyageai` do embeddings and reranking and `eleven` does
