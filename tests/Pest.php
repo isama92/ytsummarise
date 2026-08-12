@@ -135,6 +135,77 @@ function youTubeUnreachable(): MockResponse
 }
 
 /**
+ * Re-read a config file with some environment variables overridden.
+ *
+ * For the handful of values that are derived as a config file is read, where the derivation is
+ * the thing worth testing and the container's copy is only ever one sample of it.
+ *
+ * Every layer is written, and that is the whole point of this helper rather than a putenv call.
+ * env() answers from $_SERVER first, then $_ENV, and only then from anything putenv set - so a
+ * bare putenv works on a machine whose .env omits the key and is silently ignored on one whose
+ * .env has it. That is a test that passes locally and fails in CI, which is exactly what
+ * happened: CI builds its .env from .env.example, which sets both SUMMARY_MODEL_TIMEOUT and
+ * SUMMARY_RETENTION_DAYS, and three tests written with putenv went green here and red there.
+ *
+ * The same trap phpunit.xml works around by pinning credentials as both a <server> and a forced
+ * <env> entry; see .ai/rules/config.md and .ai/rules/services.md.
+ *
+ * A null override removes the variable from all three, which is how "nobody set this" is tested.
+ * Everything is put back afterwards, including the difference between a variable that was empty
+ * and one that was not there at all.
+ *
+ * @param  array<string, string|null>  $overrides
+ * @return array<string, mixed>
+ */
+function configWithEnv(string $file, array $overrides): array
+{
+    $restore = [];
+
+    foreach ($overrides as $key => $value) {
+        $restore[$key] = [
+            $_SERVER[$key] ?? null,
+            $_ENV[$key] ?? null,
+            getenv($key),
+        ];
+
+        if ($value === null) {
+            unset($_SERVER[$key], $_ENV[$key]);
+            putenv($key);
+
+            continue;
+        }
+
+        $_SERVER[$key] = $value;
+        $_ENV[$key] = $value;
+        putenv($key.'='.$value);
+    }
+
+    try {
+        return require config_path($file.'.php');
+    } finally {
+        foreach ($restore as $key => [$server, $env, $put]) {
+            if ($server === null) {
+                unset($_SERVER[$key]);
+            } else {
+                $_SERVER[$key] = $server;
+            }
+
+            if ($env === null) {
+                unset($_ENV[$key]);
+            } else {
+                $_ENV[$key] = $env;
+            }
+
+            if ($put === false) {
+                putenv($key);
+            } else {
+                putenv($key.'='.$put);
+            }
+        }
+    }
+}
+
+/**
  * The url every faked caption track is served from.
  *
  * A real one carries a signature and an expiry and runs to several hundred characters. Only the

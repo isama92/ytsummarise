@@ -643,15 +643,14 @@ test('the job budget covers every step it runs, added up', function (): void {
  * And it goes on holding when somebody changes one, which is the property that makes the
  * assertion above more than a snapshot of today's numbers. The config file is re-evaluated
  * rather than the container's copy read, because the derivation happens as the file is read.
+ *
+ * Through configWithEnv rather than putenv: env() reads $_SERVER before it reads anything
+ * putenv set, so a bare putenv is honoured on a machine whose .env omits the key and ignored on
+ * one whose .env has it. .env.example sets this one, so the putenv version of this test passed
+ * here and failed in CI. See the helper in tests/Pest.php.
  */
 test('raising a step budget raises the job budget with it', function (): void {
-    putenv('SUMMARY_MODEL_TIMEOUT=1800');
-
-    try {
-        $summaries = require config_path('summaries.php');
-    } finally {
-        putenv('SUMMARY_MODEL_TIMEOUT');
-    }
+    $summaries = configWithEnv('summaries', ['SUMMARY_MODEL_TIMEOUT' => '1800']);
 
     expect($summaries['model_timeout'])->toBe(1800)
         ->and($summaries['timeout'])->toBeGreaterThan(

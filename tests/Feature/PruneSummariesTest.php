@@ -176,14 +176,8 @@ test('zero switches retention off', function (): void {
  * to the other guard here whose failure is silent - there the permissive failure is an
  * application open to everyone, here it is other people's speech kept with no end date.
  */
-test('only a deliberate zero switches retention off', function (string $value, int $expected): void {
-    putenv('SUMMARY_RETENTION_DAYS='.$value);
-
-    try {
-        $summaries = require config_path('summaries.php');
-    } finally {
-        putenv('SUMMARY_RETENTION_DAYS');
-    }
+test('only a deliberate zero switches retention off', function (?string $value, int $expected): void {
+    $summaries = configWithEnv('summaries', ['SUMMARY_RETENTION_DAYS' => $value]);
 
     expect($summaries['retention_days'])->toBe($expected);
 })->with([
@@ -194,6 +188,7 @@ test('only a deliberate zero switches retention off', function (string $value, i
     'a typo' => ['seven', 7],
     'a negative' => ['-5', 7],
     'a boolean somebody meant as off' => ['false', 7],
+    'not set at all' => [null, 7],
 ]);
 
 test('the command is summaries:prune', function (): void {
