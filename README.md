@@ -127,6 +127,65 @@ A local model is often slower than a hosted one rather than smaller, and the AI 
 default timeout is 60 seconds. `SUMMARY_MODEL_TIMEOUT` is the budget for one prompt and
 defaults to 600.
 
+## Deploying
+
+`compose.yml` is a template for a production stack: three containers off the same GHCR
+image (the web server, a queue worker, the scheduler) behind an existing Traefik. It
+builds nothing and needs no checkout, so a host needs only that file and a `.env` beside
+it. The file documents its own knobs, the router rule and the two external networks
+among them.
+
+### What compose sets for you
+
+`APP_ENV`, `APP_DEBUG`, `DB_CONNECTION` and `LOG_CHANNEL` are declared under
+`environment:` on every service, and compose resolves that ahead of `env_file:`. So a
+`.env` copied straight from `.env.example`, still saying `APP_ENV=local` and
+`APP_DEBUG=true`, runs as production with debug off regardless. Pinning them beats
+documenting them: a stack that can be deployed into debug mode by an editing slip leaks
+stack traces and environment values to the browser.
+
+### What you have to set
+
+| Value | Why |
+| --- | --- |
+| `APP_KEY` | Empty in `.env.example`, and nothing fills it in for you. See below. |
+| `APP_URL` | Sessions and every generated link. `AUTHENTIK_REDIRECT_URI` interpolates from it, so leaving it at `localhost` breaks signing in too. |
+| `DB_*` | `DB_HOST` is the Postgres container's service name on the shared `database` network. |
+| `AUTHENTIK_*` | Unless `AUTH_ENABLED=false`. |
+| `AI_PROVIDER`, `OPENAI_COMPATIBLE_*` | The provider, url and model from [Setting it up](#setting-it-up). |
+
+Everything else has a working default. `YOUTUBE_API_KEY` is genuinely optional, and the
+`SUMMARY_*` budgets are tuned for a local model already.
+
+### APP_KEY
+
+Generate one on the host and keep it. The `key:generate` in the Dockerfile belongs to
+the asset build, and its throwaway `.env` never leaves that stage by design: a key baked
+into a public image is not a secret, and one made fresh on every container start would
+sign everybody out on every deploy.
+
+```sh
+docker run --rm --entrypoint php ghcr.io/isama92/ytsummarise:latest \
+    artisan key:generate --show
+```
+
+`--show` prints and writes nothing, so this is safe to run against the production image.
+Without the image pulled yet, `echo "base64:$(openssl rand -base64 32)"` produces the
+same thing: the cipher is `AES-256-CBC`, so the key is 32 random bytes, base64 encoded.
+
+Paste the `base64:…` value into `.env` and leave it there. Rotating it invalidates every
+session and every signed url; `config/app.php` has `previous_keys` for rotating without
+that.
+
+**An empty key does not fail loudly on its own**, which is why the entrypoint refuses to
+start without one. Nothing in the boot sequence touches the encrypter: all four caches
+build, `migrate --force` runs, the server starts listening. Laravel registers `/up` with
+no middleware group, so the healthcheck answers 200 and the container is marked healthy,
+which then releases the queue and the scheduler through their `depends_on`. Only real
+requests go through the `web` group, reach `EncryptCookies` and throw. So the unguarded
+symptom is three healthy containers, a satisfied Traefik, and a 500 for every visitor
+with `APP_DEBUG=false` hiding the reason.
+
 ## Test coverage
 
 `phpunit.xml` scopes coverage to `app/`, and the suite is kept at 100%:
