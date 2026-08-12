@@ -203,23 +203,71 @@ class FetchTranscript
             }
         }
 
+        return $this->anyManualTrack($manual);
+    }
+
+    /**
+     * The last resort: a track somebody uploaded, when nothing said what language the video is in.
+     *
+     * Reached only when yt-dlp named no language and there is no `-orig` key to infer one from,
+     * which leaves no way to tell a transcription from a translation. Refusing at that point
+     * reported videos with real, human-written subtitles as having none at all - permanently,
+     * since no_transcript does not invite another attempt.
+     *
+     * Only `subtitles`, and never `automatic_captions`. That distinction is the whole safety of
+     * this: the automatic map is one transcription filed among a hundred and fifty machine
+     * translations of it, so picking blindly there is how an English video gets summarised from
+     * Abkhazian. The manual map is what the uploader uploaded - every entry in it is a real
+     * track, and the worst case is summarising a translation somebody wrote on purpose.
+     *
+     * The first usable one, which is a guess where a video carries several. YouTube lists the
+     * original first often enough for that to be the better guess, and the alternative is
+     * refusing a video that plainly has subtitles.
+     *
+     * @param  array<array-key, mixed>  $manual
+     * @return array{url: string, language: string}|null
+     */
+    private function anyManualTrack(array $manual): ?array
+    {
+        foreach ($manual as $key => $entries) {
+            if (! is_string($key)) {
+                continue;
+            }
+            if (! is_array($entries)) {
+                continue;
+            }
+            $url = $this->captionUrl(array_values($entries));
+
+            if ($url !== null) {
+                return ['url' => $url, 'language' => TranscriptResult::primaryLanguage($key)];
+            }
+        }
+
         return null;
     }
 
     /**
      * The languages to look for a track in, best first.
      *
-     * What yt-dlp says the video is in comes first, because it is right almost every time and it
-     * is the only thing that can tell a transcription apart from the hundred and fifty
-     * translations of it filed beside it.
+     * The `-orig` suffix comes first, and the order matters more than it looks. That suffix is
+     * how YouTube labels its transcription of the original audio, so it is evidence of what was
+     * actually spoken; the `language` field is whatever the uploader typed, and uploaders are
+     * sometimes wrong.
      *
-     * The `-orig` suffix is the fallback, and does the same job from the other side: it is how
-     * YouTube labels its transcription of the original audio, so a key carrying it names the
-     * language the video was really in whatever the uploader declared. Second rather than first,
-     * because it is inferred where the other is stated.
+     * Reading the declared tag first walked straight back into the trap the language filter
+     * exists to prevent, from the other side. Every video with automatic captions carries a
+     * machine translation into every supported language, so a video declared English with Dutch
+     * audio finds an English *translation* on the first pass and never reaches `nl-orig`. The
+     * summary is then built from a machine translation, `isEnglish()` is true so it is never
+     * translated, and the outline records the language as English. Nothing anywhere says the
+     * words came second-hand.
      *
-     * Deliberately no third entry. "Any track at all" would be the Abkhazian translation of an
-     * English video, which is worse than no summary because nothing downstream could tell.
+     * The declared tag stays as the fallback, because most videos have no automatic captions at
+     * all and it is the only thing left to go on.
+     *
+     * Both may be absent, and then this is empty: without either there is no way to tell a
+     * transcription from a translation, and chooseTrack falls back to what the uploader uploaded
+     * rather than guessing inside the automatic map.
      *
      * @param  array<string, mixed>  $metadata
      * @param  array<array-key, mixed>  $automatic
@@ -229,12 +277,6 @@ class FetchTranscript
     {
         $languages = [];
 
-        $declared = $metadata['language'] ?? null;
-
-        if (is_string($declared) && $declared !== '') {
-            $languages[] = TranscriptResult::primaryLanguage($declared);
-        }
-
         foreach (array_keys($automatic) as $key) {
             if (is_string($key) && str_ends_with($key, '-orig')) {
                 $languages[] = TranscriptResult::primaryLanguage($key);
@@ -243,25 +285,39 @@ class FetchTranscript
             }
         }
 
+        $declared = $metadata['language'] ?? null;
+
+        if (is_string($declared) && $declared !== '') {
+            $languages[] = TranscriptResult::primaryLanguage($declared);
+        }
+
         return array_values(array_unique($languages));
     }
 
     /**
-     * The entries for one language out of a set of tracks, matched on the primary subtag.
+     * Every entry for one language, out of a set of tracks, matched on the primary subtag.
      *
      * Matched that way rather than by exact key because the same language is keyed several
      * ways: `en`, `en-GB` and `en-orig` are all English, and which of them a video carries is
      * not something to depend on.
      *
-     * `-orig` wins where both are present, because among automatic tracks it is the
-     * transcription rather than a translation of one.
+     * All of them and not the first, which is the same mistake as stopping at a track that
+     * merely exists, one level down. Keeping only the first matching key meant that a video
+     * listing `en` with nothing usable in it and `en-GB` with a readable track was reported as
+     * having no subtitles: the empty key won the race and the readable one was never looked at.
+     * Collecting them lets captionUrl decide, which is the only place that knows what usable
+     * means.
+     *
+     * `-orig` entries lead, because among automatic tracks that key is the transcription and
+     * the others are translations of it. Within a group the order is whatever yt-dlp gave.
      *
      * @param  array<array-key, mixed>  $tracks
-     * @return array<int, mixed>|null
+     * @return array<int, mixed>
      */
-    private function trackIn(array $tracks, string $language): ?array
+    private function trackIn(array $tracks, string $language): array
     {
-        $fallback = null;
+        $original = [];
+        $translated = [];
 
         foreach ($tracks as $key => $entries) {
             if (! is_string($key)) {
@@ -275,28 +331,29 @@ class FetchTranscript
             }
 
             if (str_ends_with($key, '-orig')) {
-                return array_values($entries);
+                $original = array_merge($original, array_values($entries));
+
+                continue;
             }
 
-            $fallback ??= array_values($entries);
+            $translated = array_merge($translated, array_values($entries));
         }
 
-        return $fallback;
+        return array_merge($original, $translated);
     }
 
     /**
-     * Where to fetch one track's json3, or null if there is no track or it is not offered in
-     * that format.
+     * Where to fetch json3 out of a set of track entries, or null if none of them offers it.
      *
-     * Takes the null through rather than making every caller check first, because "no track in
-     * this language" and "a track I cannot read" lead to exactly the same place: try the next
+     * An empty set is an ordinary input rather than a special case, because "no track in this
+     * language" and "a track I cannot read" lead to exactly the same place: try the next
      * candidate.
      *
-     * @param  array<int, mixed>|null  $entries
+     * @param  array<int, mixed>  $entries
      */
-    private function captionUrl(?array $entries): ?string
+    private function captionUrl(array $entries): ?string
     {
-        foreach ($entries ?? [] as $entry) {
+        foreach ($entries as $entry) {
             if (! is_array($entry)) {
                 continue;
             }

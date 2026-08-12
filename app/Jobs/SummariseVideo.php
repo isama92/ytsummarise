@@ -177,13 +177,16 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * already said did not work.
          *
          * It also records when the work actually began, which is the only honest thing to
-         * measure the timeout against.
+         * measure the timeout against - and the moment is kept, because the final write names
+         * it to prove the claim is still this job's. See the end of this method.
          */
+        $claimedAt = Date::now();
+
         $claimed = Summary::query()
             ->whereKey($this->summaryId)
             ->where('status', SummaryStatus::Pending)
             ->whereNull('started_at')
-            ->update(['started_at' => Date::now()]);
+            ->update(['started_at' => $claimedAt]);
 
         if ($claimed === 0) {
             /*
@@ -286,9 +289,19 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          *
          * "a summary that finishes after being written off does not keep the reason" is the test
          * that fails if this is simplified.
+         *
+         * Conditional on the claim, though, which is the one thing it does have an opinion
+         * about. Without that this job writes its summary whatever has happened to the row since
+         * it started, and there is a way for that to be the wrong summary: summaries:expire
+         * writes a long-queued attempt off, somebody submits the video again, the controller
+         * clears started_at and a second job claims the row and starts work - and then this one
+         * finishes and stamps its own older outline over an attempt that replaced it, with the
+         * newer job still running behind it. Naming the moment this job claimed makes that write
+         * affect nothing at all, which is what it should do.
          */
-        Summary::query()
+        $written = Summary::query()
             ->whereKey($this->summaryId)
+            ->where('started_at', $claimedAt)
             ->update([
                 'status' => SummaryStatus::Ready,
 
@@ -303,6 +316,19 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
                 /* Cleared rather than left alone, for the reason above. */
                 'error' => null,
             ]);
+
+        if ($written === 0) {
+            /*
+             * The work was done and thrown away, which is worth a line: it is the only way to
+             * tell this apart from an ordinary success in a worker log, and a steady trickle of
+             * it means attempts are being written off while their workers are still alive -
+             * which is a horizon that wants lengthening rather than one video that went wrong.
+             */
+            Log::warning('Finished a summary that had already been superseded', [
+                'video_id' => $summary->video_id,
+                'claimed_at' => $claimedAt->toIso8601String(),
+            ]);
+        }
     }
 
     /**

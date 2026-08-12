@@ -166,8 +166,18 @@ test('zero switches retention off', function (): void {
     Log::shouldNotHaveReceived('info');
 });
 
-test('zero survives the config as zero rather than being floored', function (): void {
-    putenv('SUMMARY_RETENTION_DAYS=0');
+/*
+ * Switching retention off takes a deliberate zero, and nothing else reads as one.
+ *
+ * Because a cast alone would make zero the answer to every value that is not a number: `(int)
+ * ''` is 0, so a blank line in an env file would quietly stop deleting anything, and the only
+ * sign of it would be a console warning on an unattended nightly run. Same for a typo, and for
+ * a negative. This is the fail-safe rule .ai/rules/config.md records for AUTH_ENABLED applied
+ * to the other guard here whose failure is silent - there the permissive failure is an
+ * application open to everyone, here it is other people's speech kept with no end date.
+ */
+test('only a deliberate zero switches retention off', function (string $value, int $expected): void {
+    putenv('SUMMARY_RETENTION_DAYS='.$value);
 
     try {
         $summaries = require config_path('summaries.php');
@@ -175,21 +185,16 @@ test('zero survives the config as zero rather than being floored', function (): 
         putenv('SUMMARY_RETENTION_DAYS');
     }
 
-    expect($summaries['retention_days'])->toBe(0);
-});
-
-/* A negative value is nonsense rather than a shorter window, so it reads as off too. */
-test('a negative retention window reads as off', function (): void {
-    putenv('SUMMARY_RETENTION_DAYS=-5');
-
-    try {
-        $summaries = require config_path('summaries.php');
-    } finally {
-        putenv('SUMMARY_RETENTION_DAYS');
-    }
-
-    expect($summaries['retention_days'])->toBe(0);
-});
+    expect($summaries['retention_days'])->toBe($expected);
+})->with([
+    'zero' => ['0', 0],
+    'a real window' => ['3', 3],
+    /* Everything below is not a number of days, so it falls back rather than reading as off. */
+    'blank' => ['', 7],
+    'a typo' => ['seven', 7],
+    'a negative' => ['-5', 7],
+    'a boolean somebody meant as off' => ['false', 7],
+]);
 
 test('the command is summaries:prune', function (): void {
     expect((new PruneSummaries)->getName())->toBe('summaries:prune');

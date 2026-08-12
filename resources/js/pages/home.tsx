@@ -475,6 +475,26 @@ export default function Home({ videoId, summary }: HomeProps) {
                             ? null
                             : stageKeyOf(describes, justFinished);
 
+                    /*
+                     * A finished summary is one that is finished *and* readable. Nothing writes
+                     * a row without an outline, so the second half is not a case anybody
+                     * expects - but it decides what happens when one exists, and the choice
+                     * worth making is between a sentence and blank space.
+                     *
+                     * Silence is the bad answer here. A ready row stops the poll, takes the
+                     * skeleton away and says nothing, so somebody is left with a heading over
+                     * an empty panel and no way to tell whether it is still loading. Treating
+                     * it as a failure at least says so and offers another attempt, which is the
+                     * one thing that could actually fix it.
+                     */
+                    const isReady =
+                        summary?.status === 'ready' &&
+                        summary.outline?.original != null;
+
+                    const hasFailed =
+                        summary?.status === 'failed' ||
+                        (summary?.status === 'ready' && !isReady);
+
                     const message = isUnrecognised
                         ? t('summaries.unrecognised')
                         : errors.video_id;
@@ -618,42 +638,53 @@ export default function Home({ videoId, summary }: HomeProps) {
                                 )}
 
                                 <div
-                                    aria-live="polite"
                                     aria-busy={isWorking}
                                     className="mt-12 w-full"
                                 >
-                                    {describes !== null &&
-                                        stageKey !== null && (
-                                            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                                                {/*
-                                                 * Announced, unlike the clock beside it. It
-                                                 * changes twice in a whole wait, and a queue
-                                                 * finally reaching this video is exactly what a
-                                                 * polite region is for.
-                                                 */}
-                                                <span data-test="stage">
-                                                    {t(stageKey)}
-                                                </span>
-
-                                                {/*
-                                                 * Hidden from assistive technology on purpose:
-                                                 * a number that changes every second inside a
-                                                 * live region would be read out every second.
-                                                 */}
-                                                {isWorking && (
-                                                    <span
-                                                        aria-hidden="true"
-                                                        className="tabular-nums"
-                                                        data-test="elapsed"
-                                                    >
-                                                        {elapsedSince(
-                                                            describes.requestedAt,
-                                                            now,
-                                                        )}
+                                    {/*
+                                     * The live region is this wrapper and not the whole block
+                                     * below it, which is the difference between announcing
+                                     * "Ready" and reading a summary aloud. A poll swapping a
+                                     * pending row for a finished one inserts a headline, ten
+                                     * points, five takeaways and, for a video that was not in
+                                     * English, all of that again - a minute or more of speech
+                                     * somebody cannot stop, when what they were waiting to hear
+                                     * is that the wait is over.
+                                     *
+                                     * Always rendered, empty or not: a region announces changes
+                                     * to what is inside it, so one that appears at the same
+                                     * moment as its content has nothing to compare against and
+                                     * may say nothing at all.
+                                     */}
+                                    <div aria-live="polite">
+                                        {describes !== null &&
+                                            stageKey !== null && (
+                                                <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                    <span data-test="stage">
+                                                        {t(stageKey)}
                                                     </span>
-                                                )}
-                                            </p>
-                                        )}
+
+                                                    {/*
+                                                     * Hidden from assistive technology on
+                                                     * purpose: a number that changes every
+                                                     * second inside a live region would be
+                                                     * read out every second.
+                                                     */}
+                                                    {isWorking && (
+                                                        <span
+                                                            aria-hidden="true"
+                                                            className="tabular-nums"
+                                                            data-test="elapsed"
+                                                        >
+                                                            {elapsedSince(
+                                                                describes.requestedAt,
+                                                                now,
+                                                            )}
+                                                        </span>
+                                                    )}
+                                                </p>
+                                            )}
+                                    </div>
 
                                     {isWorking && (
                                         <div className="mt-6 space-y-3">
@@ -663,56 +694,63 @@ export default function Home({ videoId, summary }: HomeProps) {
                                         </div>
                                     )}
 
-                                    {!isWorking &&
-                                        summary?.status === 'ready' && (
-                                            <div
-                                                key={videoId}
-                                                className="mt-6 animate-in text-pretty duration-700 fade-in slide-in-from-bottom-4"
-                                                data-test="summary"
-                                            >
-                                                {/*
-                                                 * Inside the animation and above the text,
-                                                 * because the title is looked up by the job
-                                                 * and written with the summary: the two are
-                                                 * known at the same moment and arrive
-                                                 * together rather than a heading appearing
-                                                 * first and holding the spot.
-                                                 *
-                                                 * A second level heading, not the page's.
-                                                 * It names the video this section is about,
-                                                 * it is somebody else's words rather than
-                                                 * ours, and it is absent entirely for a
-                                                 * video the lookup found but was not
-                                                 * allowed to name - none of which suits the
-                                                 * one heading that says what the page is.
-                                                 */}
-                                                {summary.title != null && (
-                                                    <h2
-                                                        className="mb-4 text-xl font-medium text-balance"
-                                                        data-test="summary-title"
-                                                    >
-                                                        {summary.title}
-                                                    </h2>
-                                                )}
+                                    {!isWorking && isReady && (
+                                        <div
+                                            key={videoId}
+                                            className="mt-6 animate-in text-pretty duration-700 fade-in slide-in-from-bottom-4"
+                                            data-test="summary"
+                                        >
+                                            {/*
+                                             * Inside the animation and above the text,
+                                             * because the title is looked up by the job
+                                             * and written with the summary: the two are
+                                             * known at the same moment and arrive
+                                             * together rather than a heading appearing
+                                             * first and holding the spot.
+                                             *
+                                             * A second level heading, not the page's.
+                                             * It names the video this section is about,
+                                             * it is somebody else's words rather than
+                                             * ours, and it is absent entirely for a
+                                             * video the lookup found but was not
+                                             * allowed to name - none of which suits the
+                                             * one heading that says what the page is.
+                                             */}
+                                            {summary.title != null && (
+                                                <h2
+                                                    className="mb-4 text-xl font-medium text-balance"
+                                                    data-test="summary-title"
+                                                >
+                                                    {summary.title}
+                                                </h2>
+                                            )}
 
-                                                <SummaryOutlineView
-                                                    outline={summary.outline}
-                                                    hasTitle={
-                                                        summary.title != null
-                                                    }
-                                                />
-                                            </div>
-                                        )}
+                                            <SummaryOutlineView
+                                                outline={summary.outline}
+                                                hasTitle={summary.title != null}
+                                            />
+                                        </div>
+                                    )}
 
                                     {/*
                                      * Why it failed, in its own words rather than one
                                      * sentence for every kind of failure. A video that does
                                      * not exist gets a message that does not invite another
                                      * attempt; see lang/en/summaries.php.
+                                     *
+                                     * role="alert" rather than sitting in the polite region
+                                     * above: this is short, it is the answer somebody has been
+                                     * waiting for, and it is worth interrupting for. It also
+                                     * covers a ready row with nothing readable in it, where
+                                     * errorKeyOf falls through to `unknown` - "this did not
+                                     * work, submit it again" - which is both true and the only
+                                     * thing that could help.
                                      */}
                                     {!isWorking &&
-                                        summary?.status === 'failed' && (
+                                        hasFailed &&
+                                        summary !== null && (
                                             <p
+                                                role="alert"
                                                 className="mt-6 text-sm text-muted-foreground"
                                                 data-test="summary-failed"
                                             >

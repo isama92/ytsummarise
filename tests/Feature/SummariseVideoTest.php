@@ -404,6 +404,56 @@ test('the first of two jobs pays and the second does not', function (): void {
 });
 
 /*
+ * The older of two attempts must not land last.
+ *
+ * summaries:expire writes off a job that has been queued longer than its horizon even though
+ * that job is alive and working - the horizon is deliberately blunt about the difference. The
+ * page then offers to try again, somebody does, the controller clears the claim, and a second
+ * job claims the row and starts. When the first one finishes it holds a summary of the same
+ * video from an attempt nobody is waiting on any more, and writing it puts a finished summary
+ * on screen while the job that replaced it is still running - which then overwrites it.
+ *
+ * Naming the moment it claimed is what makes that write affect nothing.
+ */
+test('a job whose attempt was superseded does not write its summary', function (): void {
+    Log::spy();
+    fakeYouTube();
+    fakeTranscript();
+
+    $summary = Summary::factory()->pending()->create();
+
+    /*
+     * Written off and asked for again while the model is working, which is the only window this
+     * can happen in. The claim moving is what the controller does on a retry.
+     */
+    ExtractIdeas::fake(function () use ($summary): string {
+        Summary::query()->whereKey($summary->getKey())->update([
+            'status' => SummaryStatus::Pending,
+            'started_at' => Date::now()->addMinute(),
+        ]);
+
+        return 'An idea';
+    });
+
+    CreateSummary::fake(fn (): array => [
+        'headline' => 'The summary nobody is waiting for',
+        'points' => [],
+        'takeaways' => [],
+    ]);
+
+    work(new SummariseVideo($summary->id));
+
+    $summary->refresh();
+
+    /* Left exactly as the newer attempt has it: still pending, and still holding its claim. */
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->outline)->toBeNull();
+
+    /* And said so, because otherwise it reads as an ordinary success in a worker log. */
+    Log::shouldHaveReceived('warning')->once();
+});
+
+/*
  * The other half of the status guard, and what keeps one blunt horizon from costing anything.
  * summaries:expire does not ask whether a worker ever picked a row up, so a job queued behind
  * a long enough backlog is written off while it is still perfectly alive. This is where that

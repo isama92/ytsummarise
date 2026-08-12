@@ -376,10 +376,12 @@ test('a manual track with nothing in it falls through to the automatic one', fun
 
 /*
  * yt-dlp reports whatever the uploader set as the audio language, which is occasionally wrong.
- * A video declared English whose only tracks are Dutch is still a video with a transcript, so
- * the declared language is a preference and the -orig suffix is the fallback behind it.
+ * A video declared English whose only tracks are Dutch is still a video with a transcript, and
+ * it is read as Dutch: the declared tag is a preference, and the one the -orig suffix names
+ * wins over it. The test below has the same shape with a competing English translation, which
+ * is what makes the order between them matter.
  */
-test('a video whose declared language has no track falls back to the original one', function (): void {
+test('a video whose declared language has no track is read as the one it really is', function (): void {
     Process::fake(fn () => Process::result(metadata(
         'en',
         automatic: [
@@ -398,6 +400,117 @@ test('a video whose declared language has no track falls back to the original on
 
     Http::assertSent(fn ($request): bool => str_contains($request->url(), 'lang=nl-orig'));
 });
+
+/*
+ * The Abkhazian trap entered from the other side, and the reason -orig is read before the
+ * uploader's own tag rather than after it.
+ *
+ * Every video with automatic captions carries a machine translation into every supported
+ * language. So a video declared English whose audio is Dutch finds an English *translation* on
+ * the first pass, and nl-orig - the actual transcription - is never reached. The summary would
+ * then be built from a machine translation, isEnglish() would be true so it would never be
+ * translated, and the outline would record the language as English. Nothing anywhere would say
+ * the words came second-hand.
+ */
+test('the original track wins over a translation into the declared language', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        'en',
+        automatic: [
+            'en' => track('https://www.youtube.com/api/timedtext?lang=en-translated'),
+            'nl-orig' => track('https://www.youtube.com/api/timedtext?lang=nl-orig'),
+        ],
+    )));
+
+    captions([['segs' => [['utf8' => 'De originele.']]]]);
+
+    $result = transcript()->execute('dQw4w9WgXcQ');
+
+    expect($result->language)->toBe('nl');
+
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), 'lang=nl-orig'));
+});
+
+/*
+ * With nothing to contradict it, the uploader's tag is still the answer - most videos have no
+ * automatic captions at all, so it is the only thing left to go on.
+ */
+test('the declared language is used when there is no original track to check it against', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        'nl',
+        subtitles: ['nl' => track('https://www.youtube.com/api/timedtext?lang=nl')],
+    )));
+
+    captions([['segs' => [['utf8' => 'De originele.']]]]);
+
+    expect(transcript()->execute('dQw4w9WgXcQ')->language)->toBe('nl');
+});
+
+/*
+ * A video with real, human-written subtitles that nothing names a language for. Refusing here
+ * reported it as having no subtitles at all - permanently, since no_transcript does not invite
+ * another attempt - while the track sat there readable.
+ *
+ * Safe because it is the manual map: every entry in it is something the uploader uploaded. The
+ * hundred and fifty machine translations that make guessing dangerous are in the automatic map,
+ * which this fallback never touches.
+ */
+test('a video with subtitles but no language anywhere still gets a transcript', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        null,
+        subtitles: ['en' => track('https://www.youtube.com/api/timedtext?manual=1')],
+    )));
+
+    captions([['segs' => [['utf8' => 'Real subtitles.']]]]);
+
+    $result = transcript()->execute('dQw4w9WgXcQ');
+
+    expect($result->presence)->toBe(TranscriptPresence::Found)
+        ->and($result->text)->toBe('Real subtitles.')
+        /* Taken from the key, since there is nothing else to take it from. */
+        ->and($result->language)->toBe('en');
+});
+
+/*
+ * And the fallback stays out of the automatic map even then, because that is where guessing
+ * costs an English video summarised from its Abkhazian translation.
+ */
+test('the last resort does not reach into the automatic captions', function (): void {
+    Process::fake(fn () => Process::result(metadata(
+        null,
+        automatic: ['ab' => track('https://www.youtube.com/api/timedtext?lang=ab')],
+    )));
+
+    expect(transcript()->execute('dQw4w9WgXcQ')->presence)->toBe(TranscriptPresence::Missing);
+
+    Http::assertNothingSent();
+});
+
+/*
+ * One language keyed twice, which YouTube does: `en` and `en-GB` are both English. Keeping only
+ * the first matching key meant an empty or unreadable one won the race and the readable one
+ * beside it was never looked at.
+ */
+test('a readable track is found under a second key for the same language', function (array $subtitles): void {
+    Process::fake(fn () => Process::result(metadata('en', subtitles: $subtitles)));
+
+    captions([['segs' => [['utf8' => 'British subtitles.']]]]);
+
+    $result = transcript()->execute('dQw4w9WgXcQ');
+
+    expect($result->presence)->toBe(TranscriptPresence::Found)
+        ->and($result->text)->toBe('British subtitles.');
+
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), 'gb=1'));
+})->with([
+    'the first key is empty' => [[
+        'en' => [],
+        'en-GB' => [['ext' => 'json3', 'url' => 'https://www.youtube.com/api/timedtext?gb=1']],
+    ]],
+    'the first key is unreadable' => [[
+        'en' => [['ext' => 'vtt', 'url' => 'https://www.youtube.com/api/timedtext?vtt=1']],
+        'en-GB' => [['ext' => 'json3', 'url' => 'https://www.youtube.com/api/timedtext?gb=1']],
+    ]],
+]);
 
 /*
  * The fallback stops there, deliberately. "Any track at all" would be the Abkhazian translation

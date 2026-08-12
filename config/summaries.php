@@ -23,6 +23,24 @@ $steps = (2 * $transcriptTimeout) + (3 * $modelTimeout) + 60;
 
 $timeout = max($steps, max(60, (int) env('SUMMARY_TIMEOUT', 3600)));
 
+/*
+ * Only a value that is unambiguously a number of days is believed, and everything else falls
+ * back to the default rather than to zero.
+ *
+ * Because zero switches retention off, and a cast alone makes it the answer to every value that
+ * is not a number: `SUMMARY_RETENTION_DAYS=` reads as an empty string and `(int) ''` is 0, so a
+ * blank line in an env file would quietly stop deleting anything and the only sign would be a
+ * console warning on an unattended nightly run. So would a typo, and so would a negative.
+ *
+ * This is the fail-safe rule .ai/rules/config.md records for AUTH_ENABLED, applied to the other
+ * guard in this application whose failure mode is silent: there the permissive failure is an
+ * application open to everyone, here it is holding other people's speech with no end date.
+ * Switching retention off is a decision, so it takes a deliberate zero.
+ */
+$retention = env('SUMMARY_RETENTION_DAYS', 7);
+
+$retentionDays = is_numeric($retention) && (int) $retention >= 0 ? (int) $retention : 7;
+
 return [
 
     /*
@@ -181,11 +199,15 @@ return [
     | decision to hold other people's speech with no end date, which needs a
     | reason that is not "the setting was there".
     |
+    | Which is why it takes a deliberate zero. A blank, a typo or a negative
+    | falls back to the default rather than reading as off - see the note above
+    | the derivation at the top of this file.
+    |
     | Deleting a summary is not destructive in the way it sounds: asking for the
     | same video again produces a new one. What it costs is the time to make it.
     |
     */
 
-    'retention_days' => max(0, (int) env('SUMMARY_RETENTION_DAYS', 7)),
+    'retention_days' => $retentionDays,
 
 ];
