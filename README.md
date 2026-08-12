@@ -217,8 +217,10 @@ checkout works as it is; only the extensions differ. Nothing is written back int
 repository, and `docker rmi ytsummarise-coverage` removes the image again.
 
 ## TODO
-- add redis to manage queues, session
-- add horizon
+- squash migration after first deploy
+- check coverage
+- remove solo user with creation on first access
+- admin user (only admins can see horizon)
 - associate summaries with users
 - add list of requested videos with the status
 - notify by email/ntfy when ready (if user wants to, toggle in profile)
