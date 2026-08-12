@@ -604,6 +604,16 @@ test('a late failure does not throw away a summary that already finished', funct
  * value nobody deploys: with SUMMARY_TIMEOUT=3600 the real retry_after was below the real
  * timeout and the assertion still held, which is the paid double-summarisation this test
  * exists to prevent.
+ *
+ * Three files derive that timeout independently, because none of them can call config():
+ * config/summaries.php has the original, config/queue.php needs it for retry_after and
+ * config/horizon.php for the supervisor between them. This is what notices when only one of
+ * the three is changed. The order it asserts is the one that matters:
+ *
+ *     job timeout  <  supervisor timeout  <  connection retry_after
+ *
+ * Get it wrong in either direction and a worker is still running a job the queue has already
+ * handed to somebody else.
  */
 test('the queue cannot reserve the job again while it is still running', function (): void {
     $job = new SummariseVideo(Summary::factory()->pending()->create()->id);
@@ -611,14 +621,21 @@ test('the queue cannot reserve the job again while it is still running', functio
 
     expect($job->timeout)->toBe($timeout)
         ->and($job->connection)->toBe('summaries')
-        ->and(config()->integer('queue.connections.summaries.retry_after'))
+        ->and(config()->integer('horizon.defaults.supervisor-summaries.timeout'))
         ->toBeGreaterThan($timeout)
+        ->and(config()->integer('queue.connections.summaries.retry_after'))
+        ->toBeGreaterThan(config()->integer('horizon.defaults.supervisor-summaries.timeout'))
         /*
-         * And the default connection is left where Laravel puts it, so a future job does
-         * not silently inherit half an hour of stall after a worker dies.
+         * And the general-purpose connection is left where Laravel puts it, so a future job
+         * does not silently inherit half an hour of stall after a worker dies.
          */
-        ->and(config()->integer('queue.connections.database.retry_after'))
-        ->toBe(90);
+        ->and(config()->integer('queue.connections.redis.retry_after'))
+        ->toBe(90)
+        /*
+         * Which the supervisor working it has to stay under, for the same reason as above.
+         */
+        ->and(config()->integer('horizon.defaults.supervisor-default.timeout'))
+        ->toBeLessThan(90);
 });
 
 /*
@@ -656,6 +673,28 @@ test('raising a step budget raises the job budget with it', function (): void {
         ->and($summaries['timeout'])->toBeGreaterThan(
             (2 * $summaries['transcript']['timeout']) + (3 * $summaries['model_timeout']),
         );
+});
+
+/*
+ * And the two files that copy that derivation move with it, which is the only thing making
+ * three copies of one sum survivable.
+ *
+ * The same override through all three, re-reading each file rather than the container's copy,
+ * because that is when the arithmetic happens. Somebody who raises a step budget in
+ * config/summaries.php and nowhere else gets a job whose timeout has grown past the
+ * retry_after guarding it - the worker is still summarising when the queue hands the same
+ * video to the next one, and both of them pay for it. This is what says so.
+ */
+test('raising a step budget carries the queue and the supervisor with it', function (): void {
+    $override = ['SUMMARY_MODEL_TIMEOUT' => '1800'];
+
+    $timeout = configWithEnv('summaries', $override)['timeout'];
+    $supervisor = configWithEnv('horizon', $override)['defaults']['supervisor-summaries']['timeout'];
+    $retryAfter = configWithEnv('queue', $override)['connections']['summaries']['retry_after'];
+
+    expect($timeout)->toBeGreaterThan(3600)
+        ->and($supervisor)->toBeGreaterThan($timeout)
+        ->and($retryAfter)->toBeGreaterThan($supervisor);
 });
 
 /*

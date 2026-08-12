@@ -11,15 +11,17 @@
 # over the shared docker network, with no host port published.
 #
 # The database is deliberately absent: it lives in its own compose stack and is
-# reached over the shared `database` network below. Create both networks before the
+# reached over the shared `database` network below. Redis is NOT absent - it is here,
+# because unlike Postgres it holds only this application's queue, sessions and cache,
+# and nothing else would ever share it. Create both networks before the
 # first `up`, or compose refuses to start:
 #
 #   docker network create web        # if Traefik has not already made it
 #   docker network create database
 #
 # ---------------------------------------------------------------------------------
-# For LOCAL development there is no compose stack at all - run a throwaway Postgres
-# and `composer dev` against it:
+# For LOCAL development there is no compose stack at all - run a throwaway Postgres and
+# a throwaway Redis, then `composer dev` against them:
 #
 #   docker run --rm -d --name ytsummarise-db \
 #     -e POSTGRES_USER=ytsummarise \
@@ -28,8 +30,16 @@
 #     -p 127.0.0.1:5432:5432 \
 #     postgres:18-alpine
 #
-# --rm means the data is discarded when the container stops. Drop it and add a volume
-# if you want the local database to survive a reboot.
+#   docker run --rm -d --name ytsummarise-redis \
+#     -p 127.0.0.1:6379:6379 \
+#     redis:8-alpine
+#
+# --rm means the data is discarded when either container stops. Drop it and add a volume
+# if you want the local database to survive a reboot. Redis matters less: losing it locally
+# costs you a signed-in session and anything queued, both a few seconds to redo.
+#
+# Both are needed. Without Redis the application boots and then fails on the first request
+# that touches a session, which is all of them.
 # ---------------------------------------------------------------------------------
 
 services:
@@ -44,6 +54,9 @@ services:
       APP_ENV: production
       APP_DEBUG: "false"
       DB_CONNECTION: pgsql
+      # The service name below. Pinned for the same reason as DB_CONNECTION: .env.example
+      # says 127.0.0.1, which is right for a development machine and points at nothing here.
+      REDIS_HOST: redis
       # To stdout, so `docker logs` is the whole story and nothing accumulates in the
       # storage volume. Overrides LOG_CHANNEL=stack from .env.example.
       LOG_CHANNEL: stderr
@@ -68,8 +81,8 @@ services:
       - "traefik.http.services.ytsummarise.loadbalancer.server.port=8080"
 
     volumes:
-      # Only really needed for storage/app (user uploads). Logs go to stdout and both
-      # the cache and session drivers are the database, so the framework writes very
+      # Only really needed for storage/app (user uploads). Logs go to stdout and the
+      # cache, session and queue drivers are all Redis, so the framework writes very
       # little here. The volume inherits www-data ownership from the image on first
       # mount, so there is no chown to do by hand.
       - storage:/app/storage
@@ -96,20 +109,86 @@ services:
 
     restart: unless-stopped
 
-  # Runs the summarising jobs. Without this the web container accepts a video, writes a
-  # pending row and nothing ever picks it up: the page polls a skeleton forever.
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # The queue, Horizon's own bookkeeping, the sessions and the cache. Not optional and not a
+  # cache in the "nice to have" sense: with this container gone the application cannot hold a
+  # session, so every request fails, not just the queued work.
   #
-  # `queue:work summaries` names the CONNECTION, not the queue. Summarising has its own
-  # connection because retry_after belongs to the connection and this job's timeout is
-  # half an hour; see config/queue.php. A future job on the default connection needs its
-  # own worker here, or it will sit unworked exactly as this one did.
-  queue:
+  # Persistent on purpose. appendonly writes each change to disk as it happens, so a restart -
+  # a deploy, a reboot, a crash - keeps the queued summaries, everyone's sessions and Horizon's
+  # metrics history. Without it a `docker compose up -d` silently signs everybody out and drops
+  # anything queued but not yet started, and the summary rows behind those wait for the hourly
+  # ExpireStalledSummaries to notice nothing is coming.
+  #
+  # No published port and only the internal `default` network: nothing outside this stack has
+  # any business reaching it, and Redis unauthenticated on a LAN interface is a database anyone
+  # can read.
+  redis:
+    image: redis:8-alpine
+
+    # A ceiling rather than a target - real use here is nowhere near it. A queued summary
+    # carries one integer, so a job payload is under a kilobyte, and Horizon's own records
+    # trim after an hour or a week. Reaching a gigabyte means something is wrong rather than
+    # busy, which is why the policy is noeviction: at the limit writes fail loudly instead of
+    # Redis quietly deleting somebody's queued job or half of Horizon's history to make room.
+    # Both databases share this one arena, so a runaway cache would otherwise take the queue
+    # with it - eviction just changes which of the two you lose silently.
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory"
+      - "1gb"
+      - "--maxmemory-policy"
+      - "noeviction"
+
+    networks:
+      - default
+
+    volumes:
+      - redis:/data
+
+    # Load bearing, not tidiness. The image's entrypoint drops from root to redis with
+    # setpriv, which needs CAP_SETUID and CAP_SETGID - and cap_drop below takes those, so
+    # without this it stays root with an empty capability set and cannot write into /data
+    # (owned redis:redis). The container then exits 1 on "Can't open or create append-only
+    # dir", never goes healthy, and every service here waits on it, so nothing starts at all.
+    # Naming the user directly means the entrypoint has nothing to drop.
+    user: redis
+
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+    restart: unless-stopped
+
+  # Runs the summarising jobs, and everything else queued. Without this the web container
+  # accepts a video, writes a pending row and nothing ever picks it up: the page polls a
+  # skeleton forever.
+  #
+  # One process for every queue, which is what Horizon buys over `queue:work`. It reads
+  # config/horizon.php and starts a supervisor per group: one for high/default/low, one for
+  # summaries pinned to a single worker. A new queue is a config entry rather than another
+  # container here, which is the trap the old comment on this service had to warn about.
+  horizon:
     image: ghcr.io/isama92/ytsummarise:latest
     env_file: .env
     environment: &worker_environment
       APP_ENV: production
       APP_DEBUG: "false"
       DB_CONNECTION: pgsql
+      REDIS_HOST: redis
       LOG_CHANNEL: stderr
 
     # Straight to artisan, deliberately bypassing app-entrypoint.sh. That script migrates,
@@ -117,9 +196,9 @@ services:
     # migrating. Nothing is lost by skipping its caches either, since a worker reads
     # config from the environment.
     #
-    # --max-time recycles the process every hour so a leak in a long model call cannot
-    # accumulate. No --tries: the job sets its own, and one attempt is deliberate.
-    entrypoint: ["php", "artisan", "queue:work", "summaries", "--max-time=3600"]
+    # No flags: what --max-time and --tries used to say here now lives in config/horizon.php,
+    # per supervisor, where the dashboard can also show it.
+    entrypoint: ["php", "artisan", "horizon"]
 
     networks:
       - default
@@ -133,14 +212,38 @@ services:
     cap_drop:
       - ALL
 
-    # Nothing to probe: a worker listens on no port. `docker logs` and the jobs table are
-    # how you tell whether it is working.
+    # On SIGTERM Horizon stops taking new jobs and lets the running one finish. This is how
+    # long compose waits for that before SIGKILL.
+    #
+    # 120s is a deliberate compromise, not the safe number. The safe number is past a whole
+    # summary - upwards of an hour - and a `docker compose down` that hangs for an hour with no
+    # output is a worse thing to own than a lost summary. So a long summary caught mid-deploy
+    # does die, its row keeps started_at set, and ExpireStalledSummaries writes it off. Raise
+    # this if that trade stops being the right one.
+    stop_grace_period: 120s
+
+    # Unlike a bare worker, Horizon can be asked. This turns "the master died and is
+    # restart-looping" into an unhealthy container rather than something you find in the logs.
+    #
+    # Exit 2 is inactive, 1 is paused and 0 is running, and only 2 is a fault. Testing the code
+    # rather than letting docker read any non-zero as unhealthy is what keeps `horizon:pause` -
+    # the supported way to hold the queue during maintenance - from being indistinguishable
+    # from a dead master. `$$` escapes compose's own interpolation.
+    healthcheck:
+      test: ["CMD-SHELL", "php artisan horizon:status; [ $$? -ne 2 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
     restart: unless-stopped
 
     # So a deploy never has a worker running against a database the web container has not
-    # migrated yet.
+    # migrated yet, or against a Redis that is not accepting connections.
     depends_on:
       ytsummarise:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # Runs the scheduler, which is what expires summaries whose job stopped existing. One
@@ -169,6 +272,8 @@ services:
     depends_on:
       ytsummarise:
         condition: service_healthy
+      redis:
+        condition: service_healthy
 
 networks:
   # Traefik's network, created outside this stack.
@@ -181,3 +286,5 @@ networks:
 
 volumes:
   storage:
+  # Redis' appendonly file. See the redis service for why this is not left ephemeral.
+  redis:

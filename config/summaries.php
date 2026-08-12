@@ -1,8 +1,6 @@
 <?php
 
-$modelTimeout = max(30, (int) env('SUMMARY_MODEL_TIMEOUT', 600));
-
-$transcriptTimeout = max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120));
+use App\Support\SummaryBudget;
 
 /*
  * The job's budget has to cover the budgets of everything inside it, or the worker is what
@@ -10,18 +8,19 @@ $transcriptTimeout = max(15, (int) env('SUMMARY_TRANSCRIPT_TIMEOUT', 120));
  * out of time stops and records a reason somebody can read; a worker that runs out of patience
  * kills the job mid-write and leaves the failure handler guessing at "unknown".
  *
- * So it is derived rather than trusted, and SUMMARY_TIMEOUT is a floor rather than the value.
- * Capping the steps instead would have been the other way round, and worse: somebody who asks
- * for a ten minute model budget would silently get eight.
- *
- * The worst case is one video: two transcript steps (asking yt-dlp, then fetching the track it
- * names) and three prompts (the ideas, the summary, and translating it for a video that was not
- * in English). The minute on the end covers the lookup, which has its own short timeouts in
- * app/Services/YouTube, and the handful of writes around the work.
+ * The derivation is in App\Support\SummaryBudget rather than here because config/queue.php and
+ * config/horizon.php have to agree with it and neither can read a config value. That class is
+ * where the reasoning lives, including why SUMMARY_TIMEOUT is a floor rather than the value.
  */
-$steps = (2 * $transcriptTimeout) + (3 * $modelTimeout) + 60;
+$modelTimeout = SummaryBudget::modelSeconds(env('SUMMARY_MODEL_TIMEOUT'));
 
-$timeout = max($steps, max(60, (int) env('SUMMARY_TIMEOUT', 3600)));
+$transcriptTimeout = SummaryBudget::transcriptSeconds(env('SUMMARY_TRANSCRIPT_TIMEOUT'));
+
+$timeout = SummaryBudget::seconds(
+    env('SUMMARY_MODEL_TIMEOUT'),
+    env('SUMMARY_TRANSCRIPT_TIMEOUT'),
+    env('SUMMARY_TIMEOUT'),
+);
 
 /*
  * Only a value that is unambiguously a number of days is believed, and everything else falls

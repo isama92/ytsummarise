@@ -118,9 +118,16 @@ return [
     |
     */
 
+    /*
+     * The store only matters with the "cache" driver, which is how maintenance mode is shared
+     * across machines - and this application runs three containers off one image, so that is
+     * the driver anybody here would reach for. It names redis rather than the database store
+     * that used to exist, or `php artisan down` throws "Cache store [database] is not defined"
+     * at the moment you least want to be debugging configuration.
+     */
     'maintenance' => [
         'driver' => env('APP_MAINTENANCE_DRIVER', 'file'),
-        'store' => env('APP_MAINTENANCE_STORE', 'database'),
+        'store' => env('APP_MAINTENANCE_STORE', 'redis'),
     ],
 
 ];

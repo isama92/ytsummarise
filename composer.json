@@ -10,9 +10,11 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
+        "ext-redis": "*",
         "inertiajs/inertia-laravel": "^3.3.1",
         "laravel/ai": "^0.10.3",
         "laravel/framework": "^13.25",
+        "laravel/horizon": "^5.48.3",
         "laravel/socialite": "^5.29",
         "laravel/wayfinder": "^0.1.21",
         "saloonphp/laravel-plugin": "^4.3",

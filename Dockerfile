@@ -38,6 +38,20 @@
 FROM dunglas/frankenphp:php8.5-bookworm AS build-base
 WORKDIR /app
 
+# Both of these are BUILD requirements rather than runtime ones, which is the whole reason
+# they are here and not only in `prod`: `composer install` below verifies platform
+# requirements and stops with "requires ext-x * -> it is missing from your system" before a
+# single package is written.
+#
+# pcntl because Horizon lists ext-pcntl and ext-posix as hard requirements and the base image
+# has only posix. redis because composer.json requires ext-redis - declared deliberately, so
+# that dropping it from the `prod` line below fails this build instead of failing at the
+# first session read on a running container.
+#
+# This is the stage both `vendor` and `assets` inherit; `prod` is a different image and
+# shares nothing with it, so it installs its own.
+RUN install-php-extensions pcntl redis
+
 
 # PHP dependencies. Split so the expensive `composer install` is keyed on the lock file
 # alone and survives ordinary source edits.
@@ -89,7 +103,14 @@ COPY --from=vendor /app /app
 # document title, so setting APP_NAME in the production .env changes the title Blade
 # renders but NOT the one the client sets after hydration. Change it in .env.example
 # and rebuild.
+#
+# The three driver overrides are what keep this stage buildable. .env.example puts the cache,
+# the session and the queue on Redis, and there is no Redis in a build - so anything booting
+# artisan here is one stray cache read away from a connection refused. Nothing in
+# key:generate or wayfinder:generate touches a store today; these say so rather than leaving
+# it to luck, and they never leave the stage either.
 RUN cp .env.example .env \
+    && printf '\nCACHE_STORE=array\nSESSION_DRIVER=array\nQUEUE_CONNECTION=sync\n' >> .env \
     && php artisan key:generate --no-interaction \
     && npm run build
 
@@ -99,7 +120,33 @@ FROM dunglas/frankenphp:php8.5-alpine AS prod
 # install-php-extensions (shipped in the base image) rather than docker-php-ext-install,
 # because it pulls the postgres headers for the build and leaves only the runtime
 # library behind.
-RUN install-php-extensions pdo_pgsql
+#
+# pcntl and posix are Horizon's, and posix is the only one of the three already present:
+# without pcntl the master supervisor cannot fork, and without redis there is no queue for
+# it to supervise. phpredis rather than predis/predis deliberately - it is what Horizon
+# recommends, and installing it per-stage keeps the libc-agnostic invariant above intact,
+# which a compiled composer package would not.
+RUN install-php-extensions pdo_pgsql pcntl redis
+
+# yt-dlp, without which this image can accept a video and never summarise one: it is the only
+# thing here that can find a caption track, and no captions means no summary. FetchTranscript
+# looks it up on PATH by default (YT_DLP_BINARY), and the horizon container is where it runs -
+# but all three services come off this one image, so it lands in all of them.
+#
+# Metadata only, so no ffmpeg: the command is --dump-single-json --skip-download, and the
+# caption track it names is then fetched over plain http by the application itself.
+#
+# The cost is about 117MB, nearly all of it the python this pulls in - real against an Alpine
+# runtime chosen to save 570MB, and still comfortably ahead. The standalone musllinux build is
+# a third of the size, but it wants a pinned version and a checksum, and a pin is the thing
+# most likely to go stale here. That matters more than the megabytes: yt-dlp breaks whenever
+# YouTube changes its player, so the version wants to move on every rebuild, which is exactly
+# what an unpinned apk package does and a vendored binary does not.
+#
+# Run once at build so a package that installed but cannot start - a broken python, a bad
+# release - fails here rather than as an "unavailable" transcript weeks later.
+RUN apk add --no-cache yt-dlp \
+    && yt-dlp --version
 
 # The image ships php.ini-development and php.ini-production but activates neither, so
 # PHP would run on built-in defaults - display_errors among them. Put the production one

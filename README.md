@@ -20,11 +20,17 @@ Three steps, and only the last two involve a model.
 
 ### Setting it up
 
-`yt-dlp` has to be on `PATH` — on the queue worker, not only on your own machine:
+`yt-dlp` has to be on `PATH`. The published image ships it, so this is a local development
+step; set `YT_DLP_BINARY` to an absolute path if yours lives somewhere unusual.
 
 ```sh
 yt-dlp --version
 ```
+
+Keep it current. It is the one dependency here that breaks on somebody else's schedule —
+YouTube changes its player and yt-dlp follows, so a version left alone for months eventually
+stops finding caption tracks and every summary fails as "unavailable". The image picks up
+whatever Alpine has each time it is rebuilt.
 
 Then point the application at a model. Any provider in `config/ai.php` that generates text
 will do; `cohere`, `jina` and `voyageai` do embeddings and reranking and `eleven` does
@@ -60,12 +66,42 @@ having: both summarising agents ask for a json schema, and whether an OpenAI-com
 gateway passes that through to the model underneath is the likeliest thing to be wrong
 about a self-hosted setup that otherwise answers perfectly well. The key is never printed.
 
-Summaries are produced by a queued job on its own connection, so a worker has to be
-running:
+Summaries are produced by a queued job, so a worker has to be running. `composer dev`
+starts one for you — its `queue` tab is Horizon, which works every queue this application
+has. On its own:
 
 ```sh
-php artisan queue:work summaries
+php artisan horizon
 ```
+
+Queues live in Redis, so there has to be one of those too. Locally that is a throwaway
+container next to the Postgres one; both are documented at the top of `compose.yml`.
+
+```sh
+docker run --rm -d --name ytsummarise-redis -p 127.0.0.1:6379:6379 redis:8-alpine
+```
+
+Redis is not only the queue — the cache and the sessions are on it as well, so without it
+the application fails on the first request rather than just failing to summarise.
+
+### Watching the queue
+
+`/horizon` is the dashboard: what is queued, what is running, what failed and why, and how
+long things waited. It is restricted to **the first user in the database** — user id 1,
+whoever set the application up. Anyone else gets a 403.
+
+Two things about that worth knowing before you go looking for a bug:
+
+- In `APP_ENV=local` Horizon lets everyone through regardless, which is its own behaviour
+  and not something configured here. The gate only ever applies to a deployed application.
+- With `AUTH_ENABLED=false` it is open to anyone who can reach the site, because that
+  setting signs every visitor in as user 1 by design. That mode is only safe behind a
+  private network to begin with, and the dashboard is inside the same "anyone".
+
+Queue names are in `app/Enums/Queue.php` and who works them is `config/horizon.php`:
+`high`, `default` and `low` share a supervisor and are worked in that order, and
+`summaries` has its own, pinned to one process because a summary is a long paid model call
+and two at once is two of them competing for the same machine.
 
 ### Suggested context window
 
@@ -130,19 +166,28 @@ defaults to 600.
 ## Deploying
 
 `compose.yml` is a template for a production stack: three containers off the same GHCR
-image (the web server, a queue worker, the scheduler) behind an existing Traefik. It
-builds nothing and needs no checkout, so a host needs only that file and a `.env` beside
-it. The file documents its own knobs, the router rule and the two external networks
-among them.
+image (the web server, Horizon, the scheduler) and a Redis beside them, behind an existing
+Traefik. It builds nothing and needs no checkout, so a host needs only that file and a
+`.env` beside it. The file documents its own knobs, the router rule and the two external
+networks among them.
+
+Postgres is deliberately not in there and Redis deliberately is: the database lives in its
+own stack and is shared, while Redis holds nothing but this application's queue, sessions
+and cache. It keeps an appendonly volume, so a restart does not sign everybody out or drop
+what was queued.
 
 ### What compose sets for you
 
-`APP_ENV`, `APP_DEBUG`, `DB_CONNECTION` and `LOG_CHANNEL` are declared under
+`APP_ENV`, `APP_DEBUG`, `DB_CONNECTION`, `REDIS_HOST` and `LOG_CHANNEL` are declared under
 `environment:` on every service, and compose resolves that ahead of `env_file:`. So a
 `.env` copied straight from `.env.example`, still saying `APP_ENV=local` and
 `APP_DEBUG=true`, runs as production with debug off regardless. Pinning them beats
 documenting them: a stack that can be deployed into debug mode by an editing slip leaks
 stack traces and environment values to the browser.
+
+`REDIS_HOST` is there for a duller reason — `.env.example` says `127.0.0.1`, which is
+right on a development machine and points at nothing inside a container. The stack's own
+Redis is reachable as `redis`.
 
 ### What you have to set
 
@@ -217,8 +262,10 @@ checkout works as it is; only the extensions differ. Nothing is written back int
 repository, and `docker rmi ytsummarise-coverage` removes the image again.
 
 ## TODO
-- add redis to manage queues, session
-- add horizon
+- squash migration after first deploy
+- check coverage
+- remove solo user with creation on first access
+- real admin users, rather than horizon being restricted to user id 1
 - associate summaries with users
 - add list of requested videos with the status
 - notify by email/ntfy when ready (if user wants to, toggle in profile)

@@ -11,13 +11,24 @@ return [
     |
     | This option determines the default session driver that is utilized for
     | incoming requests. Laravel supports a variety of storage options to
-    | persist session data. Database storage is a great default choice.
+    | persist session data.
     |
-    | Supported: "file", "cookie", "database", "array"
+    | Supported: "file", "cookie", "redis", "array"
+    |
+    | Not "database", and the fallback moved off it with the same care as the ones in
+    | config/cache.php and config/queue.php: the sessions table went with the move to Redis,
+    | so that driver now names a table nothing creates.
+    |
+    | It is the worst of the three to leave pointing at nothing, because of how late it fails.
+    | An operator whose .env predates this - or simply omits the line - boots cleanly, passes
+    | every cache build and the migration, and answers the /up healthcheck, which Laravel
+    | registers outside the web group. So compose marks the container healthy and releases
+    | Horizon and the scheduler behind it, and only a real request reaches the session and
+    | 500s. Three healthy containers and a 500 for every visitor.
     |
     */
 
-    'driver' => env('SESSION_DRIVER', 'database'),
+    'driver' => env('SESSION_DRIVER', 'redis'),
 
     /*
     |--------------------------------------------------------------------------
@@ -63,29 +74,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Session Database Connection
+    | Session Connection
     |--------------------------------------------------------------------------
     |
-    | When using the "database" session driver, you may specify a connection that
-    | should be used to manage these sessions. This should correspond to a
-    | connection in your database configuration options.
+    | Which Redis connection holds the sessions. The redis driver borrows the redis CACHE
+    | store and then re-points it at this value, and leaving it empty resolves to `default`
+    | anyway - so this changes nothing and says something: sessions are not in the cache
+    | database, which is why `cache:clear` cannot sign everybody out. See config/database.php.
     |
     */
 
     'connection' => env('SESSION_CONNECTION'),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Session Database Table
-    |--------------------------------------------------------------------------
-    |
-    | When using the "database" session driver, you may specify the table to
-    | be used to store sessions. Of course, a sensible default is defined
-    | for you; however, you're welcome to change this to another table.
-    |
-    */
-
-    'table' => env('SESSION_TABLE', 'sessions'),
 
     /*
     |--------------------------------------------------------------------------

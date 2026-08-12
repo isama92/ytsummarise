@@ -1,5 +1,7 @@
 <?php
 
+use Illuminate\Support\Str;
+
 return [
 
     /*
@@ -75,6 +77,69 @@ return [
     'migrations' => [
         'table' => 'migrations',
         'update_date_on_publish' => true,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Redis Databases
+    |--------------------------------------------------------------------------
+    |
+    | Redis carries the queue, Horizon's own bookkeeping, the sessions and the cache. Four
+    | things, deliberately across two databases rather than one.
+    |
+    | The split is the whole reason this block is not the stock single connection. `cache:clear`
+    | is a FLUSHDB, and it is a command people run without thinking twice - reasonably, because
+    | on this application it used to mean a DELETE against a cache table and nothing else. On one
+    | shared database it would now take every queued summary, every one of Horizon's metrics and
+    | every signed-in session with it. So the cache gets a database of its own and nothing else
+    | lives there.
+    |
+    | Sessions sit on `default` rather than beside the cache for that same reason, and they get
+    | there on their own: the redis session driver borrows the redis CACHE store and then
+    | re-points it at config('session.connection'), and a null there resolves to `default`. So
+    | the safe arrangement is also the one you get by leaving it alone - SESSION_CONNECTION is
+    | set in .env.example to say so out loud rather than to change anything.
+    |
+    | phpredis rather than predis, matching what the Dockerfile installs and what Horizon
+    | recommends. No cluster: Horizon does not support Redis Cluster.
+    |
+    */
+
+    'redis' => [
+
+        'client' => env('REDIS_CLIENT', 'phpredis'),
+
+        'options' => [
+            'prefix' => env('REDIS_PREFIX', Str::slug((string) env('APP_NAME', 'laravel'), '_').'_database_'),
+            'persistent' => env('REDIS_PERSISTENT', false),
+        ],
+
+        /*
+         * The queue, Horizon and the sessions. config/horizon.php's `use` names this one, and
+         * queue.connections.redis and queue.connections.summaries both point here - Horizon can
+         * only see the jobs it is watching if they are all on the same database.
+         */
+        'default' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_DB', '0'),
+        ],
+
+        /*
+         * The cache store, and nothing else. See above for why it is alone here.
+         */
+        'cache' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_CACHE_DB', '1'),
+        ],
+
     ],
 
 ];

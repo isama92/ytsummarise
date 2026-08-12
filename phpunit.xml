@@ -33,7 +33,18 @@
         <env name="DB_URL" value=""/>
         <!-- Pinned because SummariseVideoTest asserts the default connection is left at
              Laravel's 90. Unset, a developer's own .env would flow into that assertion. -->
-        <env name="DB_QUEUE_RETRY_AFTER" value="90"/>
+        <env name="REDIS_QUEUE_RETRY_AFTER" value="90"/>
+        <!-- Nowhere, on purpose. The suite runs on array cache, array sessions and a sync
+             queue, so nothing here should ever open a Redis connection - and a test that
+             starts to should say so by failing to connect, rather than quietly succeeding
+             against whatever a developer happens to have running on 6379 and then failing
+             on a machine that has nothing.
+
+             Both elements for the reason the api key below spells out: <env force> alone
+             is defeated by an exported REDIS_HOST, because phpdotenv reads
+             ServerConstAdapter before EnvConstAdapter. -->
+        <server name="REDIS_HOST" value="redis.invalid"/>
+        <env name="REDIS_HOST" value="redis.invalid" force="true"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

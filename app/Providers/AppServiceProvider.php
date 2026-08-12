@@ -6,6 +6,7 @@ namespace App\Providers;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Foundation\DevCommands;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -34,6 +35,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+        $this->configureDevCommands();
         $this->configureInertia();
         $this->configureModels();
         $this->configureSocialite();
@@ -117,6 +119,28 @@ class AppServiceProvider extends ServiceProvider
         DB::prohibitDestructiveCommands(
             app()->isProduction(),
         );
+    }
+
+    /**
+     * Give `composer dev` a queue tab that works this application's queues.
+     *
+     * Laravel's own default registers `queue:listen`, which works the DEFAULT connection -
+     * so on this application it has never once picked up a summary, and the README had to
+     * tell you to run a second worker by hand next to it. Horizon reads config/horizon.php
+     * and works every queue there is, which is the whole reason it is here.
+     *
+     * This replaces that tab rather than adding a fifth: commands are keyed by name, and a
+     * registration from application code outranks one from registerDefaults(), so reusing
+     * the name "queue" is what does the swapping. Registering under any other name would
+     * leave both running.
+     *
+     * Needs the local Redis from the top of compose.yml, as the rest of the application now
+     * does.
+     */
+    protected function configureDevCommands(): void
+    {
+        DevCommands::withTimestamps();
+        DevCommands::artisan('horizon', 'queue');
     }
 
     /**
