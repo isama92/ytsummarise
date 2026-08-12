@@ -29,4 +29,15 @@ return [
         'redirect' => env('AUTHENTIK_REDIRECT_URI', '/auth/callback'),
     ],
 
+    /*
+     * Optional, and null is the ordinary case rather than a misconfiguration. Looking a
+     * video up goes to the keyless oEmbed endpoint first; this key only buys a second
+     * opinion from the Data API when that did not settle whether the video exists. See
+     * App\Services\YouTube\VideoLookup, which reads it with is_string() rather than
+     * config()->string() for exactly that reason.
+     */
+    'youtube' => [
+        'key' => env('YOUTUBE_API_KEY'),
+    ],
+
 ];

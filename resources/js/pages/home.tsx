@@ -1,7 +1,13 @@
 import type { FormComponentRef } from '@inertiajs/core';
-import { Form, Head, usePoll } from '@inertiajs/react';
+import { Form, Head, usePage, usePoll } from '@inertiajs/react';
 import { ArrowUp, ClipboardPaste } from 'lucide-react';
-import { useCallback, useRef, useState, useSyncExternalStore } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    useSyncExternalStore,
+} from 'react';
 import type { ClipboardEvent } from 'react';
 import { flushSync } from 'react-dom';
 import SummaryController from '@/actions/App/Http/Controllers/SummaryController';
@@ -9,7 +15,9 @@ import AppHeader from '@/components/app-header';
 import AppLogoIcon from '@/components/app-logo-icon';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
+import { useTranslate } from '@/hooks/use-translate';
 import { elapsedSince } from '@/lib/elapsed';
+import { errorKeyOf, stageKeyOf } from '@/lib/summary';
 import { cn } from '@/lib/utils';
 import { extractVideoId } from '@/lib/youtube';
 import type { Summary } from '@/types';
@@ -29,29 +37,6 @@ type HomeProps = {
 type SummaryForm = {
     video_id: string;
 };
-
-/**
- * Where a summary has got to, in a word.
- *
- * Queued and processing are both `pending` on the server, which is right - they are the same
- * state of the same row - so the difference is whether a worker has claimed it, and saying
- * so is what explains a long wait when the queue is backed up.
- */
-function stageOf(summary: Summary): string | null {
-    if (summary.status === 'ready') {
-        return 'Ready';
-    }
-
-    /*
-     * Nothing for a failure. The message below it already says it did not work and what to
-     * do about it, and a one word label above that only says it twice.
-     */
-    if (summary.status === 'failed') {
-        return null;
-    }
-
-    return summary.startedAt === null ? 'Queued' : 'Processing';
-}
 
 /*
  * Quantised to the second because a snapshot has to be stable between calls: Date.now()
@@ -91,6 +76,75 @@ function useNow(ticking: boolean): number {
     return useSyncExternalStore(subscribe, currentSecond);
 }
 
+/*
+ * How long "Ready" stays up once it has been said. Long enough to be read by somebody who was
+ * watching the clock, short enough not to become a permanent label.
+ */
+const READY_ANNOUNCED_FOR = 3000;
+
+/**
+ * Whether this summary finished in front of somebody, recently enough to be worth saying.
+ *
+ * False for a page opened at a summary that was already there: "Ready" over a summary you can
+ * already read is not information. True for a few seconds after a poll turns a pending row
+ * into a finished one, which is the only moment it tells anybody anything.
+ *
+ * The video it was waiting on is remembered in a ref rather than in state, because nothing
+ * renders differently for it - it only decides whether the change that follows is news. The
+ * announcement itself is keyed on the video so it cannot outlive what it was about: asking for
+ * something else while it is up drops it rather than moving it over.
+ */
+function useJustFinished(
+    videoId: string | null,
+    summary: Summary | null,
+): boolean {
+    const waitedFor = useRef<string | null>(null);
+    const [announcing, setAnnouncing] = useState<string | null>(null);
+
+    const status = summary?.status;
+
+    useEffect(() => {
+        if (videoId === null) {
+            return;
+        }
+
+        if (status === 'pending') {
+            waitedFor.current = videoId;
+
+            return;
+        }
+
+        /*
+         * Anything else is only interesting if it is this video finishing after we watched it
+         * wait. A failure has its own message, and a summary that was ready when the page
+         * opened was never waited on.
+         */
+        if (status !== 'ready' || waitedFor.current !== videoId) {
+            return;
+        }
+
+        setAnnouncing(videoId);
+
+        const timer = setTimeout(
+            () => setAnnouncing(null),
+            READY_ANNOUNCED_FOR,
+        );
+
+        return () => clearTimeout(timer);
+
+        /*
+         * The ref is deliberately left set rather than cleared here, which keeps this whole
+         * effect repeatable: strict mode runs a mount effect, cleans it up and runs it again,
+         * and clearing it first would make that second pass fall out at the guard above with
+         * the timer already cancelled, leaving "Ready" up for good. Nothing is lost by leaving
+         * it - the effect only re-runs when the video or the status changes, and neither does
+         * again once a summary is finished.
+         */
+    }, [videoId, status]);
+
+    return announcing !== null && announcing === videoId;
+}
+
 /**
  * Asks the server for the summary again every couple of seconds.
  *
@@ -115,11 +169,17 @@ export default function Home({ videoId, summary }: HomeProps) {
     const formRef = useRef<FormComponentRef<SummaryForm>>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
+    const t = useTranslate();
+
+    /* Shared with every response, from APP_NAME; see HandleInertiaRequests. */
+    const { name } = usePage().props;
+
     const extractedVideoId = extractVideoId(query);
     const isUnrecognised = query.trim() !== '' && extractedVideoId === null;
     const isPending = summary?.status === 'pending';
 
     const now = useNow(isPending);
+    const justFinished = useJustFinished(videoId, summary);
 
     /*
      * Reading the clipboard needs a secure context and a permission the browser can
@@ -208,7 +268,7 @@ export default function Home({ videoId, summary }: HomeProps) {
 
     return (
         <>
-            <Head title="Home" />
+            <Head title={t('summaries.page_title')} />
 
             <AppHeader />
 
@@ -243,11 +303,13 @@ export default function Home({ videoId, summary }: HomeProps) {
                      * the redirect lands and says what is actually being summarised.
                      */
                     const describes = processing ? null : summary;
-                    const stage =
-                        describes === null ? null : stageOf(describes);
+                    const stageKey =
+                        describes === null
+                            ? null
+                            : stageKeyOf(describes, justFinished);
 
                     const message = isUnrecognised
-                        ? 'That does not look like a YouTube link or video code.'
+                        ? t('summaries.unrecognised')
                         : errors.video_id;
 
                     return (
@@ -266,11 +328,28 @@ export default function Home({ videoId, summary }: HomeProps) {
                             />
 
                             <div className="flex w-full max-w-2xl flex-col items-center">
-                                <AppLogoIcon className="size-8 fill-current text-foreground" />
+                                {/*
+                                 * The mark and the application's own name, together as the
+                                 * page's heading. It says what this is, it is here in every
+                                 * state, and it is one fixed thing rather than whichever
+                                 * video happens to be on screen - the outline should not
+                                 * depend on whether anything has been summarised yet.
+                                 *
+                                 * The name comes from APP_NAME by way of the shared props,
+                                 * so it is configuration rather than copy and is the one
+                                 * visible string on this page that is not in lang/en. See
+                                 * .ai/rules/i18n.md.
+                                 */}
+                                <div className="flex items-center gap-2.5">
+                                    <AppLogoIcon className="size-8 shrink-0 fill-current text-foreground" />
+
+                                    <h1 className="text-2xl font-medium text-balance">
+                                        {name}
+                                    </h1>
+                                </div>
 
                                 <p className="mt-4 text-center text-sm text-muted-foreground">
-                                    Paste a YouTube link and get a short summary
-                                    of the video.
+                                    {t('summaries.tagline')}
                                 </p>
 
                                 <div
@@ -301,11 +380,11 @@ export default function Home({ videoId, summary }: HomeProps) {
                                             setQuery(event.target.value)
                                         }
                                         onPaste={handlePaste}
-                                        placeholder="YouTube link or video code"
+                                        placeholder={t('summaries.field.label')}
                                         autoFocus
                                         autoComplete="off"
                                         spellCheck={false}
-                                        aria-label="YouTube link or video code"
+                                        aria-label={t('summaries.field.label')}
                                         aria-invalid={Boolean(message)}
                                         aria-describedby={
                                             message
@@ -324,7 +403,9 @@ export default function Home({ videoId, summary }: HomeProps) {
                                             onClick={() =>
                                                 void pasteFromClipboard()
                                             }
-                                            aria-label="Paste a link and summarise it"
+                                            aria-label={t(
+                                                'summaries.actions.paste',
+                                            )}
                                             className="shrink-0 rounded-full"
                                             data-test="paste-button"
                                         >
@@ -345,7 +426,9 @@ export default function Home({ videoId, summary }: HomeProps) {
                                             extractedVideoId === null ||
                                             processing
                                         }
-                                        aria-label="Summarise this video"
+                                        aria-label={t(
+                                            'summaries.actions.submit',
+                                        )}
                                         className="shrink-0 rounded-full"
                                         data-test="summarise-button"
                                     >
@@ -372,52 +455,38 @@ export default function Home({ videoId, summary }: HomeProps) {
                                     aria-busy={isWorking}
                                     className="mt-12 w-full"
                                 >
-                                    {describes !== null && stage !== null && (
-                                        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                                            {/*
-                                             * Announced, unlike the clock beside it. It
-                                             * changes twice in a whole wait, and a queue
-                                             * finally reaching this video is exactly what a
-                                             * polite region is for.
-                                             */}
-                                            <span data-test="stage">
-                                                {stage}
-                                            </span>
-
-                                            {/*
-                                             * Hidden from assistive technology on purpose:
-                                             * a number that changes every second inside a
-                                             * live region would be read out every second.
-                                             */}
-                                            {isWorking && (
-                                                <span
-                                                    aria-hidden="true"
-                                                    className="tabular-nums"
-                                                    data-test="elapsed"
-                                                >
-                                                    {elapsedSince(
-                                                        describes.requestedAt,
-                                                        now,
-                                                    )}
+                                    {describes !== null &&
+                                        stageKey !== null && (
+                                            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                {/*
+                                                 * Announced, unlike the clock beside it. It
+                                                 * changes twice in a whole wait, and a queue
+                                                 * finally reaching this video is exactly what a
+                                                 * polite region is for.
+                                                 */}
+                                                <span data-test="stage">
+                                                    {t(stageKey)}
                                                 </span>
-                                            )}
-                                        </p>
-                                    )}
 
-                                    {/*
-                                     * Known before the summary is, so it holds this spot
-                                     * for the whole wait rather than appearing with the
-                                     * text. The page's only heading, and absent entirely
-                                     * when the lookup could not tell us the title.
-                                     */}
-                                    {describes?.title != null && (
-                                        <h1
-                                            className="mt-1 text-xl font-medium text-balance"
-                                            data-test="summary-title"
-                                        >
-                                            {describes.title}
-                                        </h1>
-                                    )}
+                                                {/*
+                                                 * Hidden from assistive technology on purpose:
+                                                 * a number that changes every second inside a
+                                                 * live region would be read out every second.
+                                                 */}
+                                                {isWorking && (
+                                                    <span
+                                                        aria-hidden="true"
+                                                        className="tabular-nums"
+                                                        data-test="elapsed"
+                                                    >
+                                                        {elapsedSince(
+                                                            describes.requestedAt,
+                                                            now,
+                                                        )}
+                                                    </span>
+                                                )}
+                                            </p>
+                                        )}
 
                                     {isWorking && (
                                         <div className="mt-6 space-y-3">
@@ -431,35 +500,71 @@ export default function Home({ videoId, summary }: HomeProps) {
                                         summary?.status === 'ready' && (
                                             <div
                                                 key={videoId}
-                                                className="mt-6 animate-in space-y-4 text-pretty duration-700 fade-in slide-in-from-bottom-4"
+                                                className="mt-6 animate-in text-pretty duration-700 fade-in slide-in-from-bottom-4"
                                                 data-test="summary"
                                             >
-                                                {summary.body
-                                                    ?.split('\n\n')
-                                                    .map((paragraph, index) => (
-                                                        <p
-                                                            // Keyed by position: the
-                                                            // list never reorders, and
-                                                            // two identical paragraphs
-                                                            // would collide on content.
-                                                            key={index}
-                                                            className="leading-relaxed"
-                                                        >
-                                                            {paragraph}
-                                                        </p>
-                                                    ))}
+                                                {/*
+                                                 * Inside the animation and above the text,
+                                                 * because the title is looked up by the job
+                                                 * and written with the summary: the two are
+                                                 * known at the same moment and arrive
+                                                 * together rather than a heading appearing
+                                                 * first and holding the spot.
+                                                 *
+                                                 * A second level heading, not the page's.
+                                                 * It names the video this section is about,
+                                                 * it is somebody else's words rather than
+                                                 * ours, and it is absent entirely for a
+                                                 * video the lookup found but was not
+                                                 * allowed to name - none of which suits the
+                                                 * one heading that says what the page is.
+                                                 */}
+                                                {summary.title != null && (
+                                                    <h2
+                                                        className="mb-4 text-xl font-medium text-balance"
+                                                        data-test="summary-title"
+                                                    >
+                                                        {summary.title}
+                                                    </h2>
+                                                )}
+
+                                                <div className="space-y-4">
+                                                    {summary.body
+                                                        ?.split('\n\n')
+                                                        .map(
+                                                            (
+                                                                paragraph,
+                                                                index,
+                                                            ) => (
+                                                                <p
+                                                                    // Keyed by position: the
+                                                                    // list never reorders, and
+                                                                    // two identical paragraphs
+                                                                    // would collide on content.
+                                                                    key={index}
+                                                                    className="leading-relaxed"
+                                                                >
+                                                                    {paragraph}
+                                                                </p>
+                                                            ),
+                                                        )}
+                                                </div>
                                             </div>
                                         )}
 
+                                    {/*
+                                     * Why it failed, in its own words rather than one
+                                     * sentence for every kind of failure. A video that does
+                                     * not exist gets a message that does not invite another
+                                     * attempt; see lang/en/summaries.php.
+                                     */}
                                     {!isWorking &&
                                         summary?.status === 'failed' && (
                                             <p
                                                 className="mt-6 text-sm text-muted-foreground"
                                                 data-test="summary-failed"
                                             >
-                                                Summarising this video did not
-                                                work. Submit it again to try
-                                                once more.
+                                                {t(errorKeyOf(summary))}
                                             </p>
                                         )}
                                 </div>

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
 use Illuminate\Console\Attributes\Description;
@@ -61,7 +62,16 @@ class ExpireStalledSummaries extends Command
          */
         $failed = $rows->clone()
             ->whereIn('id', $videoIds->keys())
-            ->update(['status' => SummaryStatus::Failed]);
+            ->update([
+                'status' => SummaryStatus::Failed,
+
+                /*
+                 * Its own reason, and not the one a job that threw would leave. These rows
+                 * failed by never finishing, which is worth trying again and worth saying
+                 * differently from a video that does not exist.
+                 */
+                'error' => SummaryError::TimedOut,
+            ]);
 
         /*
          * Counted from what the update changed rather than from what was selected a moment

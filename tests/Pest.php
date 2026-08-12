@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /*
@@ -18,6 +19,13 @@ use Tests\TestCase;
 
 pest()->extend(TestCase::class)
     ->use(RefreshDatabase::class)
+    /*
+     * Nothing in the suite is allowed to reach the network. Summarising a video looks a
+     * video up over http, so without this a test that forgets to fake it passes on a
+     * developer's machine, hits YouTube from CI, and fails whenever YouTube feels like it.
+     * A stray request throws instead, and says which url it was.
+     */
+    ->beforeEach(fn () => Http::preventStrayRequests())
     ->in('Feature');
 
 /*
@@ -44,7 +52,29 @@ expect()->extend('toBeOne', fn () => $this->toBe(1));
 |
 */
 
-function something(): void
+/**
+ * Run a job the way a worker would, resolving whatever its handle() asks for.
+ *
+ * These tests call handle() directly rather than dispatching, because the job names its own
+ * queue connection and that overrides the sync default phpunit.xml sets - dispatching it
+ * queues it instead of running it. Going through the container is what supplies the
+ * dependencies handle() takes by method injection, exactly as the queue worker does.
+ */
+function work(object $job): void
 {
-    // ..
+    app()->call([$job, 'handle']);
+}
+
+/**
+ * A YouTube that answers, for the tests that are about something else.
+ *
+ * Only the keyless endpoint, because a title is the whole answer and the lookup asks nothing
+ * further once it has one. What the lookup does with every other answer is
+ * tests/Feature/VideoLookupTest.php's business, not every job test's.
+ */
+function fakeYouTube(string $title = 'Never Gonna Give You Up'): void
+{
+    Http::fake([
+        'https://www.youtube.com/oembed*' => Http::response(['title' => $title]),
+    ]);
 }

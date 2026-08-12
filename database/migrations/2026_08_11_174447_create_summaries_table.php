@@ -37,12 +37,12 @@ return new class extends Migration
             $table->string('status');
 
             /*
-             * The video's own title, looked up before the job is queued so the page has
-             * something to show while it waits rather than an anonymous skeleton.
+             * The video's own title, looked up by the job along with the summary and
+             * written with it, so the heading and the text arrive together.
              *
-             * Nullable because it comes from somewhere else. A lookup against YouTube can
-             * fail or be rate limited, and a video without a title is worth summarising
-             * anyway; the page simply leaves the heading out.
+             * Nullable because it comes from somewhere else. A video whose owner disabled
+             * embedding exists but will not be named by the lookup, and it is worth
+             * summarising anyway; the page simply leaves the heading out.
              */
             $table->string('title')->nullable();
 
@@ -78,6 +78,20 @@ return new class extends Migration
              * nobody is working on and every job for it returns having done nothing.
              */
             $table->timestamp('started_at')->nullable();
+
+            /*
+             * Why a failed attempt failed, as one of the codes in App\Enums\SummaryError.
+             *
+             * A code and not a sentence: the wording lives in lang/en/summaries.php, so it
+             * can be rewritten without a migration and without older rows contradicting
+             * the current release. Status says an attempt produced nothing; this says
+             * whether that is worth trying again.
+             *
+             * Nullable and null for every row that has not failed. Cleared when an attempt
+             * is retried and when one succeeds, so a reason here always belongs to the
+             * attempt the row is currently showing.
+             */
+            $table->string('error')->nullable();
 
             $table->timestamps();
 

@@ -10,6 +10,7 @@ Before planning or editing, find the row whose globs match the file's path and r
 | config/** | .ai/rules/config.md |
 | resources/css/** | .ai/rules/css.md |
 | ** | .ai/rules/general.md |
+| ** | .ai/rules/i18n.md |
 | app/Jobs/** | .ai/rules/jobs.md |
 | resources/js/pages/auth/** | .ai/rules/pages-auth.md |
 | resources/js/pages/** | .ai/rules/pages.md |

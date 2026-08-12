@@ -3,6 +3,7 @@ import { LogOut } from 'lucide-react';
 import AppearanceToggle from '@/components/appearance-toggle';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
+import { useTranslate } from '@/hooks/use-translate';
 import { logout } from '@/routes';
 
 /**
@@ -12,6 +13,7 @@ import { logout } from '@/routes';
  */
 export default function AppHeader() {
     const { auth } = usePage().props;
+    const t = useTranslate();
 
     return (
         <header className="fixed top-3 right-3 z-10 flex items-center gap-1 rounded-full bg-background/70 p-1 backdrop-blur-sm">
@@ -33,7 +35,7 @@ export default function AppHeader() {
                             variant="ghost"
                             size="icon"
                             disabled={processing}
-                            aria-label="Log out"
+                            aria-label={t('app.logout')}
                             data-test="logout-button"
                         >
                             {processing ? (
