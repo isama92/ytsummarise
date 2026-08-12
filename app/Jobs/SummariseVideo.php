@@ -91,12 +91,18 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      *
      * The sleep stands in for the latency of the model call, so the pending state on the
      * page is actually visible while developing. Illuminate\Support\Sleep rather than
-     * sleep(), because the test suite runs the queue synchronously and would otherwise
-     * pay these seconds on every test that submits a video; Sleep::fake() removes them.
+     * sleep(), because the tests call this method directly and would otherwise pay three
+     * seconds each time; Sleep::fake() removes them.
      *
-     * When the real call replaces the placeholder, check the job timeout: a model call
-     * can outlast the default 60 seconds, and queue.php's retry_after must stay larger
-     * than the timeout or the worker starts a second copy while the first still runs.
+     * They call it directly because naming a connection above overrides the sync default in
+     * phpunit.xml, so dispatching this under test queues it rather than running it. Worth
+     * knowing before writing a test that expects a submitted video to be summarised by the
+     * time the request comes back: it will not be.
+     *
+     * When the real call replaces the placeholder, check the timeout: a model call can
+     * outlast the default 60 seconds, and the connection's retry_after must stay larger
+     * than the timeout or the queue hands the job to a second worker while the first still
+     * runs. The claim below makes that safe rather than expensive, but it is still waste.
      */
     public function handle(): void
     {

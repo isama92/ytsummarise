@@ -8,6 +8,7 @@ use App\Models\Summary;
 use App\Models\User;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Sleep;
 use Inertia\Testing\AssertableInertia;
 
 /*
@@ -201,6 +202,40 @@ test('resubmitting a video whose worker went missing starts a new attempt', func
         ->and($summary->started_at)->toBeNull()
         /* And it is no longer a candidate for the command that would have killed it. */
         ->and(Summary::query()->stalled()->count())->toBe(0);
+});
+
+/*
+ * The whole way round, because the claim is a return-early and a stale one would make a row
+ * unworkable without saying so: abandoned by its worker, written off by the command, asked
+ * for again, and actually summarised. If the reset ever stops clearing the claim, the job
+ * below finds somebody else apparently working and returns having done nothing, and this is
+ * what notices.
+ */
+test('a summary written off and asked for again is really summarised', function (): void {
+    Sleep::fake();
+
+    $summary = Summary::factory()->stalled()->create(['video_id' => 'dQw4w9WgXcQ']);
+
+    $this->artisan('summaries:recover')->assertSuccessful();
+
+    expect($summary->fresh()?->status)->toBe(SummaryStatus::Failed);
+
+    $this->actingAs(User::factory()->create())
+        ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
+        ->assertRedirect(route('summaries.show', $summary));
+
+    /*
+     * Run by hand rather than inline. The job names its own connection, which overrides the
+     * sync default phpunit.xml sets, so dispatching it under test queues it rather than
+     * running it. What matters here is that handle() can claim the row it was given.
+     */
+    (new SummariseVideo($summary->fresh()))->handle();
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Ready)
+        ->and($summary->body)->not->toBeEmpty()
+        ->and($summary->started_at)->not->toBeNull();
 });
 
 test('a video somebody is already working on is joined rather than restarted', function (): void {
