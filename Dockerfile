@@ -128,6 +128,29 @@ FROM dunglas/frankenphp:php8.5-alpine AS prod
 # which a compiled composer package would not.
 RUN install-php-extensions pdo_pgsql pcntl redis
 
+# Take the file capability off the frankenphp binary, which the base image ships as
+# `cap_net_bind_service=ep` so it can bind :80 out of the box. This image binds :8080 and has
+# never needed it - but leaving it on does not merely waste a privilege, it stops the binary
+# running at all under the `cap_drop: ALL` in compose.yml.
+#
+# The reason is the `e`, the effective bit: it tells the kernel to grant the capability on
+# exec, mandatorily. When the capability is not in the process's bounding set the kernel
+# cannot honour that, and it refuses the exec rather than starting the process without it. So
+# the symptom is not a failure to bind a port; it is `frankenphp: Operation not permitted`
+# from docker-php-entrypoint, on an image whose every other command works, and a web container
+# that restart-loops having already migrated the database.
+#
+# Stripping it here rather than adding the capability back in compose keeps the reasoning at
+# ENV SERVER_NAME below true - this container really does need no capabilities - and fixes
+# every deployment of this image at once rather than each operator's compose file.
+#
+# libcap is build-only and removed in the same layer. The copy-up of a 57MB binary to change
+# one extended attribute costs about 20MB in the image, which is the price of the whole
+# cap_drop: ALL posture being real rather than documented.
+RUN apk add --no-cache libcap \
+    && setcap -r /usr/local/bin/frankenphp \
+    && apk del libcap
+
 # yt-dlp, without which this image can accept a video and never summarise one: it is the only
 # thing here that can find a caption track, and no captions means no summary. FetchTranscript
 # looks it up on PATH by default (YT_DLP_BINARY), and the horizon container is where it runs -
