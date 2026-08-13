@@ -33,14 +33,14 @@ test('the home page ignores a video id in the query string', function (): void {
 });
 
 test('the home page names the signed in user', function (): void {
-    $user = User::factory()->create(['name' => 'Stefano Borzoni']);
+    $user = User::factory()->create(['name' => 'Aaa Guy']);
 
     $this->actingAs($user)
         ->get(route('home'))
         ->assertOk()
         ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
             ->component('home')
-            ->where('auth.user.name', 'Stefano Borzoni')
+            ->where('auth.user.name', 'Aaa Guy')
             ->where('auth.user.email', $user->email),
         );
 });

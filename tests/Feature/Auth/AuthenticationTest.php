@@ -37,29 +37,29 @@ test('the redirect route sends the user to the configured provider', function ()
 
 test('the callback creates and authenticates a user the application has not seen', function (): void {
     Socialite::fake('authentik', ProviderUser::fake([
-        'name' => 'Stefano Borzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'Aaa Guy',
+        'email' => 'an@email.com',
     ]));
 
     $this->get(route('auth.callback'))->assertRedirect(route('home'));
 
     $this->assertDatabaseHas('users', [
-        'name' => 'Stefano Borzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'Aaa Guy',
+        'email' => 'an@email.com',
     ]);
 
-    $this->assertAuthenticatedAs(User::firstWhere('email', 'borzoni@vcsw.nl'));
+    $this->assertAuthenticatedAs(User::firstWhere('email', 'an@email.com'));
 });
 
 test('the callback matches an existing user on email and refreshes their name', function (): void {
     $user = User::factory()->create([
         'name' => 'Old Name',
-        'email' => 'borzoni@vcsw.nl',
+        'email' => 'an@email.com',
     ]);
 
     Socialite::fake('authentik', ProviderUser::fake([
         'name' => 'New Name',
-        'email' => 'borzoni@vcsw.nl',
+        'email' => 'an@email.com',
     ]));
 
     $this->get(route('auth.callback'))->assertRedirect(route('home'));
@@ -77,15 +77,15 @@ test('the callback matches an existing user on email and refreshes their name', 
 test('the callback falls back to the nickname when the provider sends no name', function (mixed $name): void {
     Socialite::fake('authentik', ProviderUser::fake([
         'name' => $name,
-        'nickname' => 'sborzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'nickname' => 'aguy',
+        'email' => 'an@email.com',
     ]));
 
     $this->get(route('auth.callback'))->assertRedirect(route('home'));
 
     $this->assertDatabaseHas('users', [
-        'name' => 'sborzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'aguy',
+        'email' => 'an@email.com',
     ]);
 })->with([
     'null name' => null,
@@ -96,14 +96,14 @@ test('the callback falls back to the email local part when the provider sends ne
     Socialite::fake('authentik', ProviderUser::fake([
         'name' => $name,
         'nickname' => $nickname,
-        'email' => 'borzoni@vcsw.nl',
+        'email' => 'an@email.com',
     ]));
 
     $this->get(route('auth.callback'))->assertRedirect(route('home'));
 
     $this->assertDatabaseHas('users', [
-        'name' => 'borzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'an',
+        'email' => 'an@email.com',
     ]);
 })->with([
     'both null' => [null, null],
@@ -115,24 +115,24 @@ test('the callback falls back to the email local part when the provider sends ne
  * person arriving with different capitalisation must not become a second account.
  */
 test('the callback lowercases the email before matching', function (): void {
-    $user = User::factory()->create(['email' => 'borzoni@vcsw.nl']);
+    $user = User::factory()->create(['email' => 'an@email.com']);
 
     Socialite::fake('authentik', ProviderUser::fake([
-        'name' => 'Stefano Borzoni',
-        'email' => 'Borzoni@VCSW.nl',
+        'name' => 'Aaa Guy',
+        'email' => 'an@email.com',
     ]));
 
     $this->get(route('auth.callback'))->assertRedirect(route('home'));
 
     expect(User::count())->toBe(1)
-        ->and($user->refresh()->email)->toBe('borzoni@vcsw.nl');
+        ->and($user->refresh()->email)->toBe('an@email.com');
 
     $this->assertAuthenticatedAs($user);
 });
 
 test('the callback regenerates the session id', function (): void {
     Socialite::fake('authentik', ProviderUser::fake([
-        'email' => 'borzoni@vcsw.nl',
+        'email' => 'an@email.com',
     ]));
 
     $this->startSession();
@@ -151,7 +151,7 @@ test('the callback regenerates the session id', function (): void {
  */
 test('the callback honours the url the user was originally heading for', function (): void {
     Socialite::fake('authentik', ProviderUser::fake([
-        'email' => 'borzoni@vcsw.nl',
+        'email' => 'an@email.com',
     ]));
 
     $this->withSession(['url.intended' => url('/somewhere-else')])
@@ -180,7 +180,7 @@ test('the callback sends the user back to login when the provider returns no ema
     Log::spy();
 
     Socialite::fake('authentik', ProviderUser::fake([
-        'name' => 'Stefano Borzoni',
+        'name' => 'Aaa Guy',
         'email' => null,
     ]));
 

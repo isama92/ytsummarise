@@ -63,18 +63,18 @@ test('the setup form is rendered', function (): void {
 
 test('submitting the setup form creates the user and signs them in', function (): void {
     $response = $this->post(route('first-user.store'), [
-        'name' => 'Stefano Borzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'Aaa Guy',
+        'email' => 'an@email.com',
     ]);
 
     $response->assertRedirect(route('home'));
 
     $this->assertDatabaseHas('users', [
-        'name' => 'Stefano Borzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'Aaa Guy',
+        'email' => 'an@email.com',
     ]);
 
-    $this->assertAuthenticatedAs(User::firstWhere('email', 'borzoni@vcsw.nl'));
+    $this->assertAuthenticatedAs(User::firstWhere('email', 'an@email.com'));
 });
 
 test('submitting the setup form regenerates the session id', function (): void {
@@ -83,8 +83,8 @@ test('submitting the setup form regenerates the session id', function (): void {
     $sessionIdBefore = session()->getId();
 
     $this->post(route('first-user.store'), [
-        'name' => 'Stefano Borzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'Aaa Guy',
+        'email' => 'an@email.com',
     ])->assertRedirect(route('home'));
 
     expect(session()->getId())->not->toBe($sessionIdBefore);
@@ -150,8 +150,8 @@ test('the setup form does not exist while authentication is enabled', function (
     $this->get(route('first-user.create'))->assertNotFound();
 
     $this->post(route('first-user.store'), [
-        'name' => 'Stefano Borzoni',
-        'email' => 'borzoni@vcsw.nl',
+        'name' => 'Aaa Guy',
+        'email' => 'an@email.com',
     ])->assertNotFound();
 
     expect(User::count())->toBe(0);
