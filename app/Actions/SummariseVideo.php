@@ -135,18 +135,15 @@ class SummariseVideo
      * The code is looked up rather than carried, so execute() keeps the single parameter it
      * needs and nothing is passed along purely to be printed. One indexed read at dispatch.
      *
-     * The argument is optional only because Spatie's own ActionJob asks for tags in its
-     * constructor, before it has any, and App\Jobs\ActionJob recomputes them immediately after
-     * with the ones the action was given. Deleting the default breaks dispatch entirely.
+     * The argument is required, which is only safe because App\Jobs\ActionJob hands its parent a
+     * class name rather than this instance: Spatie's own constructor asks an action for its tags
+     * before it knows what the action is being run over, and it is that call - the one that never
+     * happens here - which would need a default to survive.
      *
      * @return string[]
      */
-    public function tags(?int $summaryId = null): array
+    public function tags(int $summaryId): array
     {
-        if ($summaryId === null) {
-            return [self::class];
-        }
-
         $tags = [self::class, 'summary:'.$summaryId];
 
         $videoId = Summary::query()->whereKey($summaryId)->value('video_id');
