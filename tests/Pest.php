@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Actions\SummariseVideo;
 use App\Services\Ai\Agents\CreateSummary;
 use App\Services\Ai\Agents\ExtractIdeas;
 use App\Services\Ai\Agents\TranslateSummary;
@@ -73,16 +74,19 @@ expect()->extend('toBeOne', fn () => $this->toBe(1));
 */
 
 /**
- * Run a job the way a worker would, resolving whatever its handle() asks for.
+ * Summarise a video the way a worker would.
  *
- * These tests call handle() directly rather than dispatching, because the job names its own
- * queue connection and that overrides the sync default phpunit.xml sets - dispatching it
- * queues it instead of running it. Going through the container is what supplies the
- * dependencies handle() takes by method injection, exactly as the queue worker does.
+ * These tests call execute() directly rather than dispatching, because the action names its own
+ * queue connection and that overrides the sync default phpunit.xml sets - dispatching it queues
+ * it instead of running it. Going through the container is what supplies the collaborators the
+ * constructor takes, exactly as the queue worker does when it resolves the action.
+ *
+ * Resolved on every call rather than once, so two overlapping runs are two instances holding
+ * nothing of each other's, which is what a second worker would be.
  */
-function work(object $job): void
+function summariseVideo(int $summaryId): void
 {
-    app()->call([$job, 'handle']);
+    app(SummariseVideo::class)->execute($summaryId);
 }
 
 /**

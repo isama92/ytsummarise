@@ -2,9 +2,10 @@
 
 declare(strict_types=1);
 
+use App\Actions\SummariseVideo;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
-use App\Jobs\SummariseVideo;
+use App\Jobs\ActionJob;
 use App\Models\Summary;
 use App\Models\User;
 use Illuminate\Support\Facades\Date;
@@ -12,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Inertia\Testing\AssertableInertia;
 use Saloon\Laravel\Facades\Saloon;
+use Spatie\QueueableAction\Testing\QueueableActionFake;
 
 /*
  * The uuid is the public handle and the integer id is still the identity. HasUuids fills
@@ -43,7 +45,7 @@ test('submitting a video queues the work and hands the browser its url', functio
         ->and($summary->status)->toBe(SummaryStatus::Pending)
         ->and($summary->outline)->toBeNull();
 
-    Queue::assertPushed(SummariseVideo::class);
+    QueueableActionFake::assertPushed(SummariseVideo::class);
 });
 
 test('a video somebody already summarised is not summarised again', function (): void {
@@ -74,7 +76,7 @@ test('submitting a video whose summary failed is how you retry it', function ():
         ->post(route('summaries.store'), ['video_id' => 'dQw4w9WgXcQ'])
         ->assertRedirect(route('summaries.show', $summary));
 
-    Queue::assertPushed(SummariseVideo::class);
+    QueueableActionFake::assertPushed(SummariseVideo::class);
 
     $summary->refresh();
 
@@ -160,11 +162,18 @@ test('submitting a video does not wait on YouTube', function (): void {
         ->and($summary->error)->toBeNull();
 
     /*
-     * The job carries an id and loads the row when it runs, so what it is handed cannot be
+     * The action carries an id and loads the row when it runs, so what it is handed cannot be
      * asserted from the payload any more - only that it is queued for this row.
+     *
+     * Through the job rather than through QueueableActionFake, which answers whether an action
+     * was pushed but not what it was pushed with: the arguments live on the ActionJob wrapping
+     * it, and displayName() is what says which action that is.
      */
-    Queue::assertPushed(SummariseVideo::class,
-        fn (SummariseVideo $job): bool => $job->summaryId === $summary->id);
+    Queue::assertPushed(
+        ActionJob::class,
+        fn (ActionJob $job): bool => $job->displayName() === SummariseVideo::class
+            && $job->parameters() === [$summary->id],
+    );
 });
 
 test('the page is told the title once the summary is there', function (): void {
@@ -326,7 +335,7 @@ test('a summary that failed holding a claim is really summarised when asked for 
         /* The command's write-off leaves the claim where it was: it only changes status. */
         'command' => $this->artisan('summaries:expire')->assertSuccessful(),
         /* And the job failing on its own is the same shape reached from the other side. */
-        'job' => (new SummariseVideo($summary->id))->failed(new RuntimeException('no transcript')),
+        'job' => app(SummariseVideo::class)->failed(new RuntimeException('no transcript'), $summary->id),
     };
 
     $summary->refresh();
@@ -344,7 +353,7 @@ test('a summary that failed holding a claim is really summarised when asked for 
      * sync default phpunit.xml sets, so dispatching it under test queues it rather than
      * running it. What matters here is that handle() can claim the row it was given.
      */
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 

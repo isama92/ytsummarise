@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
+use App\Actions\SummariseVideo;
 use App\Enums\SummaryStatus;
 use App\Http\Requests\SummaryRequest;
-use App\Jobs\SummariseVideo;
 use App\Models\Summary;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Date;
@@ -111,9 +111,17 @@ class SummaryController extends Controller
          * firstOrCreate and one of them loses to the unique index on video_id, so only the
          * one that created the row dispatches. Two retrying the same failed row both do, and
          * the uniqueness lock drops the second before it reaches the queue.
+         *
+         * ->onQueue() is not decoration and not a place to name a queue - the action's
+         * connection already answers that. It is what makes this a dispatch at all: the bare
+         * ->execute() below it would summarise the video in this request, an hour of it, while
+         * somebody waits for a redirect.
+         *
+         * Resolved here rather than injected into the method, so the two Saloon connectors and
+         * the summariser behind them are not built for every request that dispatches nothing.
          */
         if ($startsAttempt) {
-            SummariseVideo::dispatch($summary->id);
+            app(SummariseVideo::class)->onQueue()->execute($summary->id);
         }
 
         return redirect()->route('summaries.show', $summary);

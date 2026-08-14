@@ -5,29 +5,25 @@ paths:
 
 # Jobs
 
-## Use Illuminate\Support\Sleep, never sleep()
-A literal sleep() charges its seconds to the suite, whether the job runs inline or a test calls handle() directly. Sleep::for(...)->seconds() behaves identically at runtime and disappears under Sleep::fake(), which also lets a test assert the duration with Sleep::assertSlept().
+This directory holds one class, and it is not where the work lives. Queueable actions are in
+`app/Actions/**` - see `.ai/rules/actions.md`, which is where the rules about doing the work
+went when `SummariseVideo` stopped being a job.
 
-Whether a job runs inline under test depends on the job, not only on phpunit.xml. QUEUE_CONNECTION=sync makes that the default, but a job naming its own connection - SummariseVideo calls onConnection('summaries') for its retry_after - overrides it, so dispatching that one under test queues it rather than running it. Do not write a test that expects a dispatched job to have finished by the time the request comes back without checking which applies; call handle() directly, or fake the queue and assert what was pushed.
+## What ActionJob puts back, and why each gap is silent
+App\Jobs\ActionJob and Spatie\QueueableAction\ActionJob have the same short name, and ours extends theirs. The parent is aliased to BaseActionJob at the top of the file; anywhere else, `use ActionJob` means ours, and prose that means theirs says "Spatie's". Worth checking which one a snippet is about before copying it.
 
-Jobs here also implement ShouldBeUnique keyed on the thing being worked on, because the work will be a paid model call: firstOrCreate guards the row but two requests arriving together both find nothing and both dispatch. Always set $uniqueFor, or a worker killed mid job holds the lock forever.
+Every queueable action is dispatched as App\Jobs\ActionJob, named in config/queuableaction.php. Note the upstream misspelling in that filename - no hyphen - and the key it reads, config('queuableaction.job_class'). Renaming that config file to the package's correctly spelled name would leave the key unread and Spatie's ActionJob in place, which fails silently: everything would queue perfectly well, without a lock and without a tag.
 
-## Claim the row, do not trust the lock
-ShouldBeUnique stops a duplicate being queued; it does not stop one being worked twice. The lock's TTL starts when a job is dispatched, not when a worker picks it up, so a job that waits in a queue and then runs can outlive its own lock while still running - and with paid work that means paying twice.
+The job class is a single global value; the package has no per-action selection. That is why the name is the plain one and there is no second class beside it: uniqueness is opted into per action by declaring uniqueId(), and an action wanting none is unaffected - see the ULID fallback below.
 
-Where the work costs money or must not be repeated, open handle() with a conditional update that claims the row, and return if it affects nothing:
+Four things about Spatie's ActionJob drive everything in ours. Each failure is silent, which is why they are pinned by ActionJobTest rather than left to be noticed.
 
-    $claimed = Summary::query()->whereKey($this->summaryId)
-        ->where('status', SummaryStatus::Pending)
-        ->whereNull('started_at')
-        ->update(['started_at' => Date::now()]);
+1. tags() is called in the parent constructor, at dispatch, with no parameters, so nothing an action tags itself with can depend on what it is being run over. Ours recomputes them with the action's arguments. Passing them is safe whatever the action declares, because PHP ignores extra positional arguments to a userland method - but an action that declares a parameter must default it, or the parent's own zero-argument call throws before we get there.
 
-    if ($claimed === 0) { return; }
+2. resolveQueueableProperties() copies only connection, queue, chainConnection, chainQueue, delay, chained, tries, timeout, maxExceptions and retryUntil, read off app($actionClass) as properties rather than methods. So declare `public int $timeout` on an action, never a timeout() method - the method form is dropped in silence. uniqueFor is not on that list and ShouldBeUnique is not implemented at all, which is the whole reason this class exists.
 
-Every condition the job already checked goes in here as well, not just the claim itself. Reading the status and then claiming are two statements, and whatever writes rows off can land between them - claim on the strength of the earlier read and the job pays for work that has already been given up on.
+3. failed() would be captured as [$action, 'failed'], and SerializesModels walks every property when the payload is written - so the action, and everything its constructor was given, rides into Redis. Here that is two Saloon connectors and a summariser on every dispatch, and a Guzzle sender is one closure away from making the write fail outright. Ours hands its parent a class name even when it has the instance, so there is no path that can capture it, and redoes the four `if (is_object($action))` branches itself: tags, middleware, backoff and retryUntil. failed() is overridden to resolve the action and forward the parameters, which is how it knows which row.
 
-Carry the id rather than the model, too. A restored job re-queries it while a job built in process keeps whatever instance it was handed, and a test that builds two jobs from one instance is testing neither.
+4. The action is resolved once per queueable property copied, at dispatch, in the web request. Keep an action's constructor dependencies cheap to build.
 
-Two consequences worth keeping: whatever resets the row for a retry must clear the claim too, or it is unclaimable forever and every later job returns having done nothing.
-
-And keep a runtime budget separate from a liveness horizon. The budget belongs to the work and runs from the claim - that is SUMMARY_TIMEOUT, and the worker enforces it. The horizon asks whether an attempt is still alive at all, runs from when it was asked for, and is deliberately blunt: it will write off a job still queued behind a long enough backlog, so it is sized so that is rare rather than impossible, and the job re-reads the status before doing anything so nothing is paid for either way.
+An action that declares neither uniqueId() nor $uniqueFor gets a per-dispatch ULID key and a bounded TTL: the lock is taken and released but never refuses anybody. Do not "simplify" that to an empty key - it would serialise every dispatch of that action against every other. And do not make the key lazy: Laravel calls uniqueId() to take the lock at dispatch and again to release it after the worker is done, either side of a serialisation, so a value rebuilt the second time releases a key nothing ever held.
