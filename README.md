@@ -262,7 +262,6 @@ checkout works as it is; only the extensions differ. Nothing is written back int
 repository, and `docker rmi ytsummarise-coverage` removes the image again.
 
 ## TODO
-- squash migration after first deploy
 - check coverage
 - remove solo user with creation on first access
 - real admin users, rather than horizon being restricted to user id 1
