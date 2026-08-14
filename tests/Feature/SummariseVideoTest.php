@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Actions\SummariseVideo;
+use App\Actions\Summarising\FindVideo;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
@@ -13,6 +14,7 @@ use App\Services\Ai\Agents\TranslateSummary;
 use App\Services\YouTube\Requests\OembedRequest;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -282,20 +284,29 @@ test('a video the lookup will not name is still summarised', function (): void {
 });
 
 /*
- * The expiry command's horizon is deliberately blunt, so it can write off an attempt whose
- * worker is alive and part way through. That job then finishes and writes its summary, and the
- * reason left behind has to go with it: a ready summary carrying "this took too long" is a trap
- * for anything that reads the column, starting with the page.
+ * An attempt written off part way through stops at the next step, and does not pay again.
+ *
+ * This is the one thing the split changed on purpose, so it is worth being plain about. As one
+ * job, an attempt that got past the status guard finished regardless: summaries:expire could
+ * write it off mid-flight and the job would still write its summary and clear the reason, which
+ * was the right outcome because the model calls had been paid for as one unit either way.
+ *
+ * Split into five, "finish regardless" would mean paying for the calls *after* the attempt was
+ * declared dead - two more model passes on a row the page has already offered to retry. So every
+ * step re-reads the status, and a written-off attempt stops at the next boundary instead.
+ *
+ * What that costs is the work already done, and the retry gets most of it back: the transcript
+ * and the ideas are both still on the row, so asking again resumes rather than restarts.
  */
-test('a summary that finishes after being written off does not keep the reason', function (): void {
+test('an attempt written off part way through stops rather than finishing', function (): void {
     fakeYouTube();
     fakeTranscript();
 
     $summary = Summary::factory()->pending()->create();
 
     /*
-     * Written off during the model call. The faked agent is the seam for that now - it is called
-     * while the job is part way through, which is the only moment this can happen in.
+     * Written off during the first model call. The faked agent is the seam for that - it is
+     * called while the chain is part way through, which is the only moment this can happen in.
      */
     ExtractIdeas::fake(function () use ($summary): string {
         Summary::query()
@@ -308,19 +319,21 @@ test('a summary that finishes after being written off does not keep the reason',
         return 'An idea';
     });
 
-    CreateSummary::fake(fn (): array => [
-        'headline' => 'A headline',
-        'points' => [],
-        'takeaways' => [],
-    ]);
-
+    /* Deliberately not faked: reaching it would be a second model call nobody should pay for. */
     summariseVideo($summary->id);
 
     $summary->refresh();
 
-    expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->outline)->not->toBeNull()
-        ->and($summary->error)->toBeNull();
+    expect($summary->status)->toBe(SummaryStatus::Failed)
+        /* The reason the row was written off with, not one invented by a step that came later. */
+        ->and($summary->error)->toBe(SummaryError::TimedOut)
+        ->and($summary->outline)->toBeNull()
+        /*
+         * And the work already done is kept, so asking again is the passes that did not run
+         * rather than all of them.
+         */
+        ->and($summary->transcript)->not->toBeNull()
+        ->and($summary->ideas)->toBe('An idea');
 });
 
 /*
@@ -332,8 +345,8 @@ test('a summary that finishes after being written off does not keep the reason',
 test('a second job for a video somebody is already working on does nothing', function (): void {
     Process::fake();
 
-    $claimedAt = Date::now()->subMinute();
-    $summary = Summary::factory()->processing()->create(['started_at' => $claimedAt]);
+    $claim = Date::now()->subMinute();
+    $summary = Summary::factory()->processing()->create(['started_at' => $claim]);
 
     /*
      * Nothing else is faked on purpose. A job that bounces off the claim must not have looked
@@ -347,7 +360,7 @@ test('a second job for a video somebody is already working on does nothing', fun
     expect($summary->status)->toBe(SummaryStatus::Pending)
         ->and($summary->outline)->toBeNull()
         /* Not re-stamped either: the claim belongs to whoever took it. */
-        ->and($summary->started_at?->timestamp)->toBe($claimedAt->timestamp);
+        ->and($summary->started_at?->timestamp)->toBe($claim->timestamp);
 
     Process::assertNothingRan();
 });
@@ -361,45 +374,23 @@ test('a second job for a video somebody is already working on does nothing', fun
  * managed to pass with the claim deleted outright. Running the second inside the first's model
  * call is the only arrangement where the claim is what answers.
  */
-test('the first of two jobs pays and the second does not', function (): void {
-    fakeYouTube();
-    fakeTranscript();
+test('a second dispatch for a video already being summarised queues nothing', function (): void {
+    Bus::fake();
 
     $summary = Summary::factory()->pending()->create();
 
+    app(SummariseVideo::class)->execute($summary->id);
+    app(SummariseVideo::class)->execute($summary->id);
+
     /*
-     * Once, or a second job that got past the claim would prompt, re-enter here and recurse
-     * rather than failing. The guard costs nothing when the claim works, because the second
-     * job returns without prompting and this never fires twice anyway.
+     * One batch between them, and the claim is what decided it rather than the lock. The lock
+     * is released the moment the first of these returns - long before its batch finishes - so
+     * by the time a second attempt is dispatched there is nothing in the cache to refuse it.
+     * started_at is not null any more, which is what does.
      */
-    $overlapped = false;
-    $prompts = 0;
+    Bus::assertBatchCount(1);
 
-    ExtractIdeas::fake(function () use ($summary, &$overlapped, &$prompts): string {
-        $prompts++;
-
-        if (! $overlapped) {
-            $overlapped = true;
-
-            /* A second worker, resolved fresh, holding nothing of the first's state. */
-            summariseVideo($summary->id);
-        }
-
-        return 'An idea';
-    });
-
-    CreateSummary::fake(fn (): array => [
-        'headline' => 'A headline',
-        'points' => [],
-        'takeaways' => [],
-    ]);
-
-    summariseVideo($summary->id);
-
-    /* One pass through the model stands for one summary paid for. */
-    expect($overlapped)->toBeTrue()
-        ->and($prompts)->toBe(1)
-        ->and($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
+    expect($summary->fresh()?->started_at)->not->toBeNull();
 });
 
 /*
@@ -429,6 +420,7 @@ test('a job whose attempt was superseded does not write its summary', function (
         Summary::query()->whereKey($summary->getKey())->update([
             'status' => SummaryStatus::Pending,
             'started_at' => Date::now()->addMinute(),
+            'claim' => 'the-attempt-that-replaced-it',
         ]);
 
         return 'An idea';
@@ -446,6 +438,7 @@ test('a job whose attempt was superseded does not write its summary', function (
 
     /* Left exactly as the newer attempt has it: still pending, and still holding its claim. */
     expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->claim)->toBe('the-attempt-that-replaced-it')
         ->and($summary->outline)->toBeNull();
 
     /* And said so, because otherwise it reads as an ordinary success in a worker log. */
@@ -459,13 +452,13 @@ test('a job whose attempt was superseded does not write its summary', function (
  * stops: the job re-reads the status it was handed and leaves a written-off attempt alone
  * rather than paying for a summary the page has already offered to try again.
  */
-test('a job whose attempt was given up on does nothing', function (): void {
-    Process::fake();
+test('an attempt that was given up on is never queued', function (): void {
+    Bus::fake();
 
     /* As summaries:expire leaves a row nothing ever started: failed, and never claimed. */
     $summary = Summary::factory()->failed()->create(['started_at' => null, 'transcript' => null]);
 
-    summariseVideo($summary->id);
+    app(SummariseVideo::class)->execute($summary->id);
 
     $summary->refresh();
 
@@ -474,7 +467,8 @@ test('a job whose attempt was given up on does nothing', function (): void {
         /* And not claimed on the way past, which would make the retry unworkable. */
         ->and($summary->started_at)->toBeNull();
 
-    Process::assertNothingRan();
+    /* Nothing queued at all, so none of the five steps ever costs anything. */
+    Bus::assertNothingBatched();
 });
 
 /*
@@ -482,8 +476,8 @@ test('a job whose attempt was given up on does nothing', function (): void {
  * the status again rather than trusting the read. summaries:expire can write the attempt off
  * in between, and claiming it then pays for a summary the page has already offered to retry.
  */
-test('a job whose attempt is given up on while it reads the row does not claim it', function (): void {
-    Process::fake();
+test('an attempt given up on while the row is read is never claimed', function (): void {
+    Bus::fake();
 
     $summary = Summary::factory()->pending()->create();
     $raced = false;
@@ -507,7 +501,7 @@ test('a job whose attempt is given up on while it reads the row does not claim i
             ]);
     });
 
-    summariseVideo($summary->id);
+    app(SummariseVideo::class)->execute($summary->id);
 
     $summary->refresh();
 
@@ -516,86 +510,7 @@ test('a job whose attempt is given up on while it reads the row does not claim i
         /* Not claimed on the way past, which would make the retry unworkable. */
         ->and($summary->started_at)->toBeNull();
 
-    Process::assertNothingRan();
-});
-
-test('a job that gives up records the failure, so the page stops waiting', function (): void {
-    Log::spy();
-
-    $summary = Summary::factory()->pending()->create();
-
-    app(SummariseVideo::class)->failed(new RuntimeException('the model refused'), $summary->id);
-
-    $summary->refresh();
-
-    expect($summary->status)->toBe(SummaryStatus::Failed)
-        ->and($summary->outline)->toBeNull()
-        /*
-         * Unknown rather than anything more specific. Whatever threw is in the log; what the
-         * page needs is a sentence, and guessing a better one from an exception message would
-         * put something in front of somebody that was written for a developer.
-         */
-        ->and($summary->error)->toBe(SummaryError::Unknown);
-
-    Log::shouldHaveReceived('error')->once();
-});
-
-/*
- * The transcript survives a failure at the model, which is what makes the retry cheap. Clearing
- * it here alongside the outline would throw away the only reason for storing it.
- */
-test('a failure at the model keeps the transcript for the retry', function (): void {
-    Log::spy();
-
-    $summary = Summary::factory()->processing()->create([
-        'transcript' => 'The words this attempt read.',
-        'transcript_language' => 'en',
-    ]);
-
-    app(SummariseVideo::class)->failed(new RuntimeException('the model refused'), $summary->id);
-
-    $summary->refresh();
-
-    expect($summary->status)->toBe(SummaryStatus::Failed)
-        ->and($summary->transcript)->toBe('The words this attempt read.')
-        ->and($summary->transcript_language)->toBe('en');
-});
-
-/*
- * The first explanation wins. A row written off by summaries:expire and then thrown on by the
- * job it was waiting for is still, most usefully, a row that took too long.
- */
-test('a failure does not overwrite a reason the row already had', function (): void {
-    Log::spy();
-
-    $summary = Summary::factory()->failed()->create(['error' => SummaryError::TimedOut]);
-
-    app(SummariseVideo::class)->failed(new RuntimeException('the model refused'), $summary->id);
-
-    expect($summary->fresh()?->error)->toBe(SummaryError::TimedOut);
-
-    Log::shouldHaveReceived('error')->once();
-});
-
-/*
- * handle() can succeed and the worker still die before it deletes the job, leaving a
- * later attempt free to throw. Marking the row failed then would hide a finished summary
- * behind a "did not work" message.
- */
-test('a late failure does not throw away a summary that already finished', function (): void {
-    Log::spy();
-
-    $summary = Summary::factory()->create();
-    $outline = $summary->outline;
-
-    app(SummariseVideo::class)->failed(new RuntimeException('worker died after writing'), $summary->id);
-
-    $summary->refresh();
-
-    expect($summary->status)->toBe(SummaryStatus::Ready)
-        ->and($summary->outline)->toBe($outline);
-
-    Log::shouldHaveReceived('error')->once();
+    Bus::assertNothingBatched();
 });
 
 /*
@@ -609,14 +524,18 @@ test('a late failure does not throw away a summary that already finished', funct
  * config/horizon.php for the supervisor between them. This is what notices when only one of
  * the three is changed. The order it asserts is the one that matters:
  *
- *     job timeout  <  supervisor timeout  <  connection retry_after
+ *     longest step  <  supervisor timeout  <  connection retry_after
+ *
+ * The step rather than the whole attempt, since summarising became a chain of five: no single
+ * job runs for the whole budget any more, and measuring retry_after against the sum would leave
+ * a dead worker's job unreserved for the better part of an hour.
  *
  * Get it wrong in either direction and a worker is still running a job the queue has already
  * handed to somebody else.
  */
-test('the queue cannot reserve the job again while it is still running', function (): void {
-    $action = app(SummariseVideo::class);
-    $timeout = config()->integer('summaries.timeout');
+test('the queue cannot reserve a step again while it is still running', function (): void {
+    $action = app(FindVideo::class);
+    $timeout = config()->integer('summaries.step_timeout');
 
     expect($action->timeout)->toBe($timeout)
         ->and($action->connection)->toBe('summaries')
@@ -625,7 +544,7 @@ test('the queue cannot reserve the job again while it is still running', functio
          * properties off the action at dispatch and reads them as properties rather than as
          * methods, so a timeout expressed any other way would be dropped in silence.
          */
-        ->and(new ActionJob($action, [1]))
+        ->and(new ActionJob($action, [1, 'a-claim', 'dQw4w9WgXcQ']))
         ->toHaveProperty('timeout', $timeout)
         ->toHaveProperty('connection', 'summaries')
         ->and(config()->integer('horizon.defaults.supervisor-summaries.timeout'))
@@ -695,27 +614,36 @@ test('raising a step budget raises the job budget with it', function (): void {
 test('raising a step budget carries the queue and the supervisor with it', function (): void {
     $override = ['SUMMARY_MODEL_TIMEOUT' => '1800'];
 
-    $timeout = configWithEnv('summaries', $override)['timeout'];
+    $summaries = configWithEnv('summaries', $override);
     $supervisor = configWithEnv('horizon', $override)['defaults']['supervisor-summaries']['timeout'];
     $retryAfter = configWithEnv('queue', $override)['connections']['summaries']['retry_after'];
 
-    expect($timeout)->toBeGreaterThan(3600)
-        ->and($supervisor)->toBeGreaterThan($timeout)
-        ->and($retryAfter)->toBeGreaterThan($supervisor);
+    expect($summaries['step_timeout'])->toBeGreaterThan(1800)
+        ->and($supervisor)->toBeGreaterThan($summaries['step_timeout'])
+        ->and($retryAfter)->toBeGreaterThan($supervisor)
+        /*
+         * And the whole attempt still fits inside the horizon that gives up on one, which is the
+         * second ordering and the one measured from when a video was asked for rather than from
+         * when a worker picked a step up.
+         */
+        ->and($summaries['timeout'])->toBeLessThanOrEqual($summaries['stale_after']);
 });
 
 /*
- * One attempt is what keeps the lock, the timeout and the expiry horizon equal. More
- * attempts and the worst case life of a job is tries × timeout plus backoff, which
- * outlasts the lock, and a submission in that window queues a second paid summary of the
- * same video.
+ * The lock outlives the action that holds it, and no longer matches its timeout.
+ *
+ * This action only claims the row and queues a batch, so its own budget is a step's. What the
+ * lock has to cover is the longest anything about this video is legitimately in flight, which is
+ * the whole attempt - and only as a backstop, because Laravel releases it when this action
+ * returns rather than when its batch finishes. The claim is the guarantee; see the action.
  */
-test('the uniqueness lock lasts exactly as long as the one attempt it guards', function (): void {
+test('the uniqueness lock outlasts the action and covers a whole attempt', function (): void {
     $action = app(SummariseVideo::class);
 
     expect($action->tries)->toBe(1)
-        ->and($action->uniqueFor)->toBe($action->timeout)
+        ->and($action->timeout)->toBe(config()->integer('summaries.step_timeout'))
         ->and($action->uniqueFor)->toBe(config()->integer('summaries.timeout'))
+        ->and($action->uniqueFor)->toBeGreaterThan($action->timeout)
         /*
          * And the job carries it, which takes a deliberate read: uniqueFor is not on the list
          * of properties the package copies off an action, so without ActionJob doing it

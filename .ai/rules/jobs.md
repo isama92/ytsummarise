@@ -33,3 +33,12 @@ Four things about Spatie's ActionJob drive everything in ours. Each failure is s
 Set $this->backoff only when an action actually asked for one. The trait's backoff() returns [] rather than null, and an empty array is not "no opinion" by the time it reaches the queue: it is imploded to "", exploded back to [''] and cast to 0, silently overriding the --backoff the worker was started with.
 
 An action keys its lock with either a uniqueId() method or a $uniqueId property, because Laravel's UniqueLock reads both and honouring only one leaves the other silently never deduplicated. An action that declares neither gets a per-dispatch ULID key and a bounded TTL: the lock is taken and released but never refuses anybody. Do not "simplify" that to an empty key - it would serialise every dispatch of that action against every other. An action that does key itself must also declare $uniqueFor, and is told so with a LogicException at dispatch rather than quietly given the unkeyed default, which for a real key would be a real hour of refusing every re-dispatch. And do not make the key lazy: Laravel calls uniqueId() to take the lock at dispatch and again to release it after the worker is done, either side of a serialisation, so a value rebuilt the second time releases a key nothing ever held.
+
+## What ActionJob adds for batches
+Two things beyond the uniqueness, tags and failure wiring already documented above, both needed once actions run in batches.
+
+handle() is overridden to set $action->actionJob = $this when the action declares that property, alongside the $action->job the parent sets. That is the only way an action can reach the batch it is running in, which is what a step of a chain needs in order to cancel the steps queued behind it. property_exists rather than an interface, because the property is what the assignment needs.
+
+middleware() returns [new SkipIfBatchCancelled]. Cancelling a batch does not unqueue anything; it marks the batch, and each remaining job has to look before it runs. This does not replace an action's own middleware: CallQueuedHandler::dispatchThroughMiddleware() merges what middleware() returns with the $middleware property, and the constructor fills that property from the action. Both apply, and ActionJobTest pins it.
+
+Worth knowing when reasoning about locks: a job placed in a batch never consults ShouldBeUnique, because Batch::add() calls Queue::bulk() directly rather than going through a PendingDispatch. A chain continuation does. See .ai/rules/actions.md for what that means for steps.

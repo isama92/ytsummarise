@@ -66,8 +66,11 @@ having: both summarising agents ask for a json schema, and whether an OpenAI-com
 gateway passes that through to the model underneath is the likeliest thing to be wrong
 about a self-hosted setup that otherwise answers perfectly well. The key is never printed.
 
-Summaries are produced by a queued job, so a worker has to be running. `composer dev`
-starts one for you — its `queue` tab is Horizon, which works every queue this application
+Summaries are produced by a queued batch of five steps, so a worker has to be running.
+Horizon's Batches tab is where a video's progress is: one batch per attempt, named for
+the video, counting one to five as the steps finish.
+
+`composer dev` starts one for you — its `queue` tab is Horizon, which works every queue this application
 has. On its own:
 
 ```sh

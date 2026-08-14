@@ -31,12 +31,14 @@ use Override;
  * @property string|null $title
  * @property string|null $transcript
  * @property string|null $transcript_language
+ * @property string|null $ideas
  * @property array<string, mixed>|null $outline
  * @property SummaryError|null $error
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
+ * @property string|null $claim
  */
-#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'outline', 'error', 'requested_at', 'started_at'])]
+#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'ideas', 'outline', 'error', 'requested_at', 'started_at', 'claim'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {
@@ -84,7 +86,7 @@ class Summary extends Model
 
             /*
              * A plain array rather than a cast to SummaryOutline, because nothing here would
-             * gain anything from the object. One place builds an outline - SummariseTranscript,
+             * gain anything from the object. One place builds an outline - App\Actions\Summarising,
              * with a constructor - and one place reads it, the page, which receives it as json
              * either way. Casting would put a hydration step between the two whose only job is
              * to be kept in step with both.

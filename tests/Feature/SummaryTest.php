@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Actions\SummariseVideo;
+use App\Actions\Summarising\FetchCaptions;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
@@ -329,13 +330,14 @@ test('a summary that failed holding a claim is really summarised when asked for 
         'video_id' => 'dQw4w9WgXcQ',
         /* Claimed by a worker that then went missing, so the row is stale and holds one. */
         'started_at' => Date::now()->subMinutes(5),
+        'claim' => 'the-worker-that-went-missing',
     ]);
 
     match ($route) {
         /* The command's write-off leaves the claim where it was: it only changes status. */
         'command' => $this->artisan('summaries:expire')->assertSuccessful(),
-        /* And the job failing on its own is the same shape reached from the other side. */
-        'job' => app(SummariseVideo::class)->failed(new RuntimeException('no transcript'), $summary->id),
+        /* And a step failing on its own is the same shape reached from the other side. */
+        'job' => app(FetchCaptions::class)->failed(new RuntimeException('no transcript'), $summary->id, (string) $summary->claim),
     };
 
     $summary->refresh();
@@ -349,9 +351,9 @@ test('a summary that failed holding a claim is really summarised when asked for 
         ->assertRedirect(route('summaries.show', $summary));
 
     /*
-     * Run by hand rather than inline. The job names its own connection, which overrides the
-     * sync default phpunit.xml sets, so dispatching it under test queues it rather than
-     * running it. What matters here is that handle() can claim the row it was given.
+     * Run by hand rather than inline. The steps name their own connection, which overrides
+     * the sync default phpunit.xml sets, so dispatching under test queues them rather than
+     * running them. What matters here is that the chain can claim the row it was given.
      */
     summariseVideo($summary->id);
 
@@ -368,10 +370,10 @@ test('a summary that failed holding a claim is really summarised when asked for 
 test('a video somebody is already working on is joined rather than restarted', function (): void {
     Queue::fake();
 
-    $claimedAt = Date::now()->subMinutes(2);
+    $claim = Date::now()->subMinutes(2);
     $summary = Summary::factory()->processing()->create([
         'video_id' => 'dQw4w9WgXcQ',
-        'started_at' => $claimedAt,
+        'started_at' => $claim,
     ]);
 
     $this->actingAs(User::factory()->create())
@@ -379,7 +381,7 @@ test('a video somebody is already working on is joined rather than restarted', f
         ->assertRedirect(route('summaries.show', $summary));
 
     /* Untouched: the work is under way and this request is simply watching it. */
-    expect($summary->fresh()?->started_at?->timestamp)->toBe($claimedAt->timestamp);
+    expect($summary->fresh()?->started_at?->timestamp)->toBe($claim->timestamp);
 });
 
 test('a brand new submission starts its clock straight away', function (): void {

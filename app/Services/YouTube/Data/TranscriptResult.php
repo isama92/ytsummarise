@@ -68,7 +68,21 @@ final class TranscriptResult extends Data
      */
     public function isEnglish(): bool
     {
-        return $this->language === 'en';
+        return self::isEnglishLanguage($this->language);
+    }
+
+    /**
+     * The same question asked of a language on its own.
+     *
+     * Public and static for the reason primaryLanguage() below is: something reads the language
+     * back off the row long after the transcript that carried it has gone out of scope.
+     * App\Actions\Summarising\TranslateOutline decides whether to pay for a third model pass on
+     * exactly this, and a second implementation of "what counts as English" is a video
+     * translated into the language it was already in, or one left untranslated.
+     */
+    public static function isEnglishLanguage(?string $language): bool
+    {
+        return $language === 'en';
     }
 
     /**

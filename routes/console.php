@@ -61,3 +61,23 @@ Schedule::command(PruneSummaries::class)->dailyAt('03:00');
  * is two hours of history. Changing one without the other quietly changes the window.
  */
 Schedule::command('horizon:snapshot')->everyFiveMinutes();
+
+/*
+ * Weekly, because a batch row is small and the point of keeping one is that it outlives the
+ * jobs it counted.
+ *
+ * job_batches is the one queue table that grows without anything trimming it: Horizon trims
+ * its own Redis records on the schedule in config/horizon.php, and failed jobs are pruned by
+ * hand when somebody has looked at them, but a finished batch sits in Postgres for good. One
+ * row per video summarised is slow growth, which is why this is weekly rather than nightly.
+ *
+ * The 48 hours is deliberately far longer than any batch can run. `queue:prune-batches`
+ * deletes finished batches older than the given age, and a summary's batch finishes within
+ * its own budget, so nothing live is ever in range - and two days leaves the Batches tab
+ * useful for anybody looking into what happened yesterday.
+ *
+ * Unfinished batches are left alone on purpose. --hours only touches finished ones, and a
+ * batch that never finished is evidence rather than clutter; --unfinished would delete
+ * exactly the rows worth reading.
+ */
+Schedule::command('queue:prune-batches --hours=48')->weekly();

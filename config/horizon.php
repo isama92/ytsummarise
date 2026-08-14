@@ -8,10 +8,15 @@ use Illuminate\Support\Str;
  * How long the summarising worker gets, which is the job's own budget rather than a number
  * chosen here. Three values have to stay in this order or a paid job is worked twice:
  *
- *     job timeout  <  supervisor timeout  <  connection retry_after
- *      (summaries.timeout)   (below)        (queue.connections.summaries)
+ *     longest step  <  supervisor timeout  <  connection retry_after
+ *      (summaries.step_timeout)  (below)     (queue.connections.summaries)
  *
- * The job is what actually stops - SummariseVideo sets $timeout from config('summaries.timeout')
+ * The step rather than the whole attempt, because summarising is a chain of five jobs and no one
+ * of them runs for the whole budget. $summaryTimeout below is still derived, but only the waits
+ * threshold uses it: a video queued behind another waits for that video's whole chain, so that
+ * one is measured against the attempt while everything else is measured against a step.
+ *
+ * The job is what actually stops - the steps set $timeout from config('summaries.step_timeout')
  * and Laravel prefers a job's own timeout over the worker's. The supervisor's is the fallback
  * under it, and separately the grace Horizon gives a terminating worker to finish what it is
  * holding before it stops the process outright
@@ -26,6 +31,16 @@ $summaryTimeout = SummaryBudget::seconds(
     env('SUMMARY_MODEL_TIMEOUT'),
     env('SUMMARY_TRANSCRIPT_TIMEOUT'),
     env('SUMMARY_TIMEOUT'),
+);
+
+/*
+ * What one step of the summarising chain may take, which is what a worker enforces. The
+ * supervisor below is ordered against this rather than against the whole attempt, because no
+ * single job runs for the whole attempt any more.
+ */
+$summaryStepTimeout = SummaryBudget::stepSeconds(
+    env('SUMMARY_MODEL_TIMEOUT'),
+    env('SUMMARY_TRANSCRIPT_TIMEOUT'),
 );
 
 return [
@@ -299,7 +314,7 @@ return [
             'maxJobs' => 50,
             'memory' => 256,
             'tries' => 1,
-            'timeout' => $summaryTimeout + 30,
+            'timeout' => $summaryStepTimeout + 30,
             'nice' => 10,
         ],
     ],
