@@ -8,7 +8,11 @@ use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
 use App\Models\Summary;
+use App\Services\Ai\Data\SummarySections;
 use Illuminate\Support\Facades\Log;
+use Laravel\Ai\Contracts\Agent;
+use Laravel\Ai\Contracts\HasStructuredOutput;
+use Laravel\Ai\Responses\StructuredAgentResponse;
 use Spatie\QueueableAction\QueueableAction;
 use Throwable;
 
@@ -167,6 +171,29 @@ abstract class SummarisingStep
             'already_summarised' => $ready,
             'exception' => $exception?->getMessage(),
         ]);
+    }
+
+    /**
+     * Ask a model for a structured answer, and turn it into sections.
+     *
+     * The three lines this replaces were written out in both steps that prompt for one, and a
+     * third time in the class they were lifted from - which nothing called, so the only copy with
+     * a test on it was the one that never ran. What a structured pass is here is one decision:
+     * which timeout it gets, that the SDK really did return a structured response, and that a
+     * model's answer is read through parse() rather than from(), because from() is what hydrates
+     * a stored row and must not apply the tolerance meant for a model.
+     *
+     * The timeout is read here rather than passed in, so no caller can forget it. It is the
+     * per-prompt budget rather than the step's: three of these fit inside one attempt, and the
+     * step's own budget is what the worker enforces around whichever is running.
+     */
+    protected function sections(Agent&HasStructuredOutput $agent, string $prompt): SummarySections
+    {
+        $response = $agent->prompt($prompt, timeout: config()->integer('summaries.model_timeout'));
+
+        assert($response instanceof StructuredAgentResponse);
+
+        return SummarySections::parse($response->toArray());
     }
 
     /**

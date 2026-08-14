@@ -86,7 +86,7 @@ class Summary extends Model
 
             /*
              * A plain array rather than a cast to SummaryOutline, because nothing here would
-             * gain anything from the object. One place builds an outline - SummariseTranscript,
+             * gain anything from the object. One place builds an outline - App\Actions\Summarising,
              * with a constructor - and one place reads it, the page, which receives it as json
              * either way. Casting would put a hydration step between the two whose only job is
              * to be kept in step with both.

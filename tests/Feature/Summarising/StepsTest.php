@@ -91,17 +91,20 @@ test('captions already on the row are not fetched again', function (): void {
     Process::assertNothingRan();
 });
 
-test('drafting the ideas writes them for the step that reads them', function (): void {
+test('drafting the ideas reads the transcript and writes what it made of it', function (): void {
     ExtractIdeas::fake(fn (): string => "An idea from the video\nAnother idea");
 
     [$summary, $claim] = claimedSummary([
-        'transcript' => 'We are no strangers to love.',
+        'transcript' => 'The transcript itself, at length.',
         'transcript_language' => 'en',
     ]);
 
     app(DraftIdeas::class)->execute($summary->id, $claim);
 
     expect($summary->fresh()?->ideas)->toBe("An idea from the video\nAnother idea");
+
+    /* The first pass is the only one the transcript itself is given to. */
+    ExtractIdeas::assertPrompted(fn (AgentPrompt $prompt): bool => $prompt->prompt === 'The transcript itself, at length.');
 });
 
 /*
@@ -298,4 +301,40 @@ test('ideas stored as an empty string are drafted again', function (): void {
     app(DraftIdeas::class)->execute($summary->id, $claim);
 
     expect($summary->fresh()?->ideas)->toBe('What the video says.');
+});
+
+/*
+ * The translation reads the finished summary rather than the transcript, which is the cheaper
+ * order and the better one: everything lost in translating an hour of speech would be lost before
+ * anybody had decided what mattered.
+ *
+ * Worth pinning on this step rather than trusting the chain, because the step is handed a row
+ * that holds both and could read either.
+ */
+test('the translation is given the summary rather than the transcript', function (): void {
+    TranslateSummary::fake(fn (): array => [
+        'headline' => 'The whole video in one English sentence',
+        'points' => [],
+        'takeaways' => [],
+    ]);
+
+    [$summary, $claim] = claimedSummary([
+        'transcript' => 'The transcript itself, at length.',
+        'transcript_language' => 'nl',
+        'ideas' => 'Wat de video zegt.',
+        'outline' => [
+            'language' => 'nl',
+            'original' => ['headline' => 'Een kop', 'points' => [], 'takeaways' => []],
+            'english' => null,
+        ],
+    ]);
+
+    app(TranslateOutline::class)->execute($summary->id, $claim);
+
+    TranslateSummary::assertPrompted(function (AgentPrompt $prompt): bool {
+        expect($prompt->prompt)->not->toContain('The transcript itself');
+
+        /* As json, which is the shape the instructions say it arrives in. */
+        return json_decode($prompt->prompt, true)['headline'] === 'Een kop';
+    });
 });

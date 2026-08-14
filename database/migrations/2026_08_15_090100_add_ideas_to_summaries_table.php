@@ -31,6 +31,7 @@ return new class extends Migration
     {
         Schema::table('summaries', function (Blueprint $table): void {
             $table->longText('ideas')->nullable()->after('transcript_language');
+            $table->ulid('claim')->nullable()->after('started_at');
         });
     }
 

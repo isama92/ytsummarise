@@ -7,8 +7,6 @@ namespace App\Actions\Summarising;
 use App\Models\Summary;
 use App\Services\Ai\Agents\CreateSummary;
 use App\Services\Ai\Data\SummaryOutline;
-use App\Services\Ai\Data\SummarySections;
-use Laravel\Ai\Responses\StructuredAgentResponse;
 
 /**
  * Step four: the summary itself.
@@ -53,14 +51,9 @@ class ComposeSummary extends SummarisingStep
         /* Both written by the two steps before this one, or the batch was cancelled. */
         assert($summary->ideas !== null && $summary->transcript_language !== null);
 
-        $response = (new CreateSummary)
-            ->prompt($summary->ideas, timeout: config()->integer('summaries.model_timeout'));
-
-        assert($response instanceof StructuredAgentResponse);
-
         $outline = new SummaryOutline(
             $summary->transcript_language,
-            SummarySections::parse($response->toArray()),
+            $this->sections(new CreateSummary, $summary->ideas),
         );
 
         $this->write($summaryId, $claim, ['outline' => $outline->toArray()]);

@@ -8,9 +8,7 @@ use App\Enums\SummaryStatus;
 use App\Models\Summary;
 use App\Services\Ai\Agents\TranslateSummary;
 use App\Services\Ai\Data\SummaryOutline;
-use App\Services\Ai\Data\SummarySections;
 use App\Services\YouTube\Data\TranscriptResult;
-use Laravel\Ai\Responses\StructuredAgentResponse;
 
 /**
  * Step five: the English version, when there is one to make, and the end of the attempt either
@@ -45,15 +43,10 @@ class TranslateOutline extends SummarisingStep
         $outline = SummaryOutline::from($summary->outline);
 
         if (! TranscriptResult::isEnglishLanguage($outline->language)) {
-            $response = (new TranslateSummary)
-                ->prompt($outline->original->toJson(), timeout: config()->integer('summaries.model_timeout'));
-
-            assert($response instanceof StructuredAgentResponse);
-
             $outline = new SummaryOutline(
                 $outline->language,
                 $outline->original,
-                SummarySections::parse($response->toArray()),
+                $this->sections(new TranslateSummary, $outline->original->toJson()),
             );
         }
 
