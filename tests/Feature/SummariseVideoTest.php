@@ -2,9 +2,10 @@
 
 declare(strict_types=1);
 
+use App\Actions\SummariseVideo;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
-use App\Jobs\SummariseVideo;
+use App\Jobs\ActionJob;
 use App\Models\Summary;
 use App\Services\Ai\Agents\CreateSummary;
 use App\Services\Ai\Agents\ExtractIdeas;
@@ -34,7 +35,7 @@ test('the job writes a summary and marks it ready', function (): void {
 
     $summary = Summary::factory()->pending()->create();
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -56,7 +57,7 @@ test('a video in another language is summarised in it and translated', function 
 
     $summary = Summary::factory()->pending()->create();
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -81,7 +82,7 @@ test('a video that does not exist is failed rather than summarised', function ()
 
     $summary = Summary::factory()->pending()->create();
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -118,7 +119,7 @@ test('a video nobody could be asked about is failed as unreachable', function ()
 
     $summary = Summary::factory()->pending()->create();
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -145,7 +146,7 @@ test('a video with no subtitles is failed rather than summarised', function (): 
 
     $summary = Summary::factory()->pending()->create();
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -169,7 +170,7 @@ test('a video whose subtitles could not be fetched is failed as unavailable', fu
 
     $summary = Summary::factory()->pending()->create();
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -201,7 +202,7 @@ test('the transcript is stored before the model is asked about it', function ():
         'takeaways' => [],
     ]);
 
-    work(new SummariseVideo(Summary::factory()->pending()->create()->id));
+    summariseVideo(Summary::factory()->pending()->create()->id);
 
     expect($storedMidway)->toBe('We are no strangers to love.');
 });
@@ -225,7 +226,7 @@ test('a retry after a failed model call does not fetch the transcript again', fu
         'transcript_language' => 'nl',
     ]);
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
 
@@ -249,7 +250,7 @@ test('a transcript without its language is fetched again', function (): void {
         'transcript_language' => null,
     ]);
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     Process::assertRan(fn (): bool => true);
 
@@ -270,7 +271,7 @@ test('a video the lookup will not name is still summarised', function (): void {
 
     $summary = Summary::factory()->pending()->create();
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -313,7 +314,7 @@ test('a summary that finishes after being written off does not keep the reason',
         'takeaways' => [],
     ]);
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -339,7 +340,7 @@ test('a second job for a video somebody is already working on does nothing', fun
      * anything up, fetched anything or prompted anything, and the suite's stray request guards
      * are what say so: reaching any of them from here throws rather than passing quietly.
      */
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -366,9 +367,6 @@ test('the first of two jobs pays and the second does not', function (): void {
 
     $summary = Summary::factory()->pending()->create();
 
-    $first = new SummariseVideo($summary->id);
-    $second = new SummariseVideo($summary->id);
-
     /*
      * Once, or a second job that got past the claim would prompt, re-enter here and recurse
      * rather than failing. The guard costs nothing when the claim works, because the second
@@ -377,13 +375,14 @@ test('the first of two jobs pays and the second does not', function (): void {
     $overlapped = false;
     $prompts = 0;
 
-    ExtractIdeas::fake(function () use ($second, &$overlapped, &$prompts): string {
+    ExtractIdeas::fake(function () use ($summary, &$overlapped, &$prompts): string {
         $prompts++;
 
         if (! $overlapped) {
             $overlapped = true;
 
-            work($second);
+            /* A second worker, resolved fresh, holding nothing of the first's state. */
+            summariseVideo($summary->id);
         }
 
         return 'An idea';
@@ -395,7 +394,7 @@ test('the first of two jobs pays and the second does not', function (): void {
         'takeaways' => [],
     ]);
 
-    work($first);
+    summariseVideo($summary->id);
 
     /* One pass through the model stands for one summary paid for. */
     expect($overlapped)->toBeTrue()
@@ -441,7 +440,7 @@ test('a job whose attempt was superseded does not write its summary', function (
         'takeaways' => [],
     ]);
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -466,7 +465,7 @@ test('a job whose attempt was given up on does nothing', function (): void {
     /* As summaries:expire leaves a row nothing ever started: failed, and never claimed. */
     $summary = Summary::factory()->failed()->create(['started_at' => null, 'transcript' => null]);
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -508,7 +507,7 @@ test('a job whose attempt is given up on while it reads the row does not claim i
             ]);
     });
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     $summary->refresh();
 
@@ -525,7 +524,7 @@ test('a job that gives up records the failure, so the page stops waiting', funct
 
     $summary = Summary::factory()->pending()->create();
 
-    (new SummariseVideo($summary->id))->failed(new RuntimeException('the model refused'));
+    app(SummariseVideo::class)->failed(new RuntimeException('the model refused'), $summary->id);
 
     $summary->refresh();
 
@@ -553,7 +552,7 @@ test('a failure at the model keeps the transcript for the retry', function (): v
         'transcript_language' => 'en',
     ]);
 
-    (new SummariseVideo($summary->id))->failed(new RuntimeException('the model refused'));
+    app(SummariseVideo::class)->failed(new RuntimeException('the model refused'), $summary->id);
 
     $summary->refresh();
 
@@ -571,7 +570,7 @@ test('a failure does not overwrite a reason the row already had', function (): v
 
     $summary = Summary::factory()->failed()->create(['error' => SummaryError::TimedOut]);
 
-    (new SummariseVideo($summary->id))->failed(new RuntimeException('the model refused'));
+    app(SummariseVideo::class)->failed(new RuntimeException('the model refused'), $summary->id);
 
     expect($summary->fresh()?->error)->toBe(SummaryError::TimedOut);
 
@@ -589,7 +588,7 @@ test('a late failure does not throw away a summary that already finished', funct
     $summary = Summary::factory()->create();
     $outline = $summary->outline;
 
-    (new SummariseVideo($summary->id))->failed(new RuntimeException('worker died after writing'));
+    app(SummariseVideo::class)->failed(new RuntimeException('worker died after writing'), $summary->id);
 
     $summary->refresh();
 
@@ -616,11 +615,19 @@ test('a late failure does not throw away a summary that already finished', funct
  * handed to somebody else.
  */
 test('the queue cannot reserve the job again while it is still running', function (): void {
-    $job = new SummariseVideo(Summary::factory()->pending()->create()->id);
+    $action = app(SummariseVideo::class);
     $timeout = config()->integer('summaries.timeout');
 
-    expect($job->timeout)->toBe($timeout)
-        ->and($job->connection)->toBe('summaries')
+    expect($action->timeout)->toBe($timeout)
+        ->and($action->connection)->toBe('summaries')
+        /*
+         * And both reach the job, which is not a given: the package copies a fixed list of
+         * properties off the action at dispatch and reads them as properties rather than as
+         * methods, so a timeout expressed any other way would be dropped in silence.
+         */
+        ->and(new ActionJob($action, [1]))
+        ->toHaveProperty('timeout', $timeout)
+        ->toHaveProperty('connection', 'summaries')
         ->and(config()->integer('horizon.defaults.supervisor-summaries.timeout'))
         ->toBeGreaterThan($timeout)
         ->and(config()->integer('queue.connections.summaries.retry_after'))
@@ -704,11 +711,20 @@ test('raising a step budget carries the queue and the supervisor with it', funct
  * same video.
  */
 test('the uniqueness lock lasts exactly as long as the one attempt it guards', function (): void {
-    $job = new SummariseVideo(Summary::factory()->pending()->create()->id);
+    $action = app(SummariseVideo::class);
 
-    expect($job->tries)->toBe(1)
-        ->and($job->uniqueFor)->toBe($job->timeout)
-        ->and($job->uniqueFor)->toBe(config()->integer('summaries.timeout'));
+    expect($action->tries)->toBe(1)
+        ->and($action->uniqueFor)->toBe($action->timeout)
+        ->and($action->uniqueFor)->toBe(config()->integer('summaries.timeout'))
+        /*
+         * And the job carries it, which takes a deliberate read: uniqueFor is not on the list
+         * of properties the package copies off an action, so without ActionJob doing it
+         * the lock would be taken with no expiry at all and a worker killed mid attempt would
+         * hold it forever.
+         */
+        ->and(new ActionJob($action, [1]))
+        ->toHaveProperty('uniqueFor', $action->uniqueFor)
+        ->toHaveProperty('tries', 1);
 });
 
 /*
@@ -722,7 +738,7 @@ test('a job delivered twice does not summarise twice', function (): void {
     $summary = Summary::factory()->create();
     $outline = $summary->outline;
 
-    work(new SummariseVideo($summary->id));
+    summariseVideo($summary->id);
 
     expect($summary->fresh()?->outline)->toBe($outline);
 
@@ -738,6 +754,14 @@ test('a job delivered twice does not summarise twice', function (): void {
 test('one job is in flight per video, not per request', function (): void {
     $summary = Summary::factory()->create(['video_id' => 'dQw4w9WgXcQ']);
 
-    expect((new SummariseVideo($summary->id))->uniqueId())->toBe((string) $summary->id)
+    $action = app(SummariseVideo::class);
+
+    expect($action->uniqueId($summary->id))->toBe((string) $summary->id)
+        /*
+         * And the key the lock is actually taken on is that, qualified by the action, so a
+         * second action keyed on the same row would not silently share this one's lock.
+         */
+        ->and((new ActionJob($action, [$summary->id]))->uniqueId())
+        ->toBe(SummariseVideo::class.':'.$summary->id)
         ->and(fn (): Summary => Summary::factory()->create(['video_id' => 'dQw4w9WgXcQ']))->toThrow(QueryException::class);
 });

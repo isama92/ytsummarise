@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Jobs;
+namespace App\Actions;
 
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
@@ -13,34 +13,50 @@ use App\Services\YouTube\Actions\LookupVideo;
 use App\Services\YouTube\Data\TranscriptResult;
 use App\Services\YouTube\Enums\TranscriptPresence;
 use App\Services\YouTube\Enums\VideoPresence;
-use Illuminate\Contracts\Queue\ShouldBeUnique;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
+use Spatie\QueueableAction\QueueableAction;
 use Throwable;
 
 /**
  * Produces the summary for one video.
  *
- * Unique per video because the work behind this will be a paid model call. Two people
- * retrying the same failed video in the same instant both find it failed, both start an
- * attempt and both dispatch; the lock drops the second before it reaches the queue.
+ * Here rather than under either service because it is the one piece of work that spans both:
+ * looking a video up and fetching its captions belong to App\Services\YouTube, summarising them
+ * belongs to App\Services\Ai, and the order the three run in belongs to neither.
  *
- * Not the concurrent-create case, which never reaches here: video_id carries a unique
- * index, so of two requests for a video nobody has asked for yet only one creates the row,
- * and only the one that created it dispatches.
+ * Queued through App\Jobs\ActionJob, which is what makes it unique per video. The work
+ * behind this is a paid model call, so two people retrying the same failed video in the same
+ * instant both find it failed, both start an attempt and both dispatch; the lock drops the
+ * second before it reaches the queue.
  *
- * Carries a row id and nothing else. Not for the payload's sake - SerializesModels already
- * reduced a model property to a class and a key - but so that there is one way the row is
- * obtained rather than two. A restored job re-queried it while a job built in process kept
- * whatever instance it was handed, and a test that reused one instance for two jobs passed
- * with the claim deleted outright because the first call had already mutated it to ready in
- * memory. Loading it here means every caller gets what a worker would get.
+ * Not the concurrent-create case, which never reaches here: video_id carries a unique index,
+ * so of two requests for a video nobody has asked for yet only one creates the row, and only
+ * the one that created it dispatches.
+ *
+ * Takes a row id and nothing else. Not for the payload's sake - SerializesModels already reduced
+ * a model parameter to a class and a key - but so that there is one way the row is obtained
+ * rather than two. A restored job re-queried it while one run in process kept whatever instance
+ * it was handed, and a test that reused one instance for two runs passed with the claim deleted
+ * outright because the first call had already mutated it to ready in memory. Loading it in
+ * execute() means every caller gets what a worker would get.
  */
-class SummariseVideo implements ShouldBeUnique, ShouldQueue
+class SummariseVideo
 {
-    use Queueable;
+    use QueueableAction;
+
+    /**
+     * Its own connection, which is where its retry_after lives; see config/queue.php.
+     *
+     * A plain property, unlike the onConnection() call this needed as a job: that was a way
+     * around Illuminate\Foundation\Queue\Queueable declaring an untyped $connection a typed
+     * override could not narrow, and an action uses none of it. ActionJob's parent copies
+     * this onto the job at dispatch.
+     *
+     * No queue named alongside it, because the connection already answers that: it defaults to
+     * Queue::Summaries, which is the one supervisor-summaries works.
+     */
+    public ?string $connection = 'summaries';
 
     /**
      * One attempt, deliberately.
@@ -52,7 +68,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     public int $tries = 1;
 
     /**
-     * How long this job may run before the worker kills it.
+     * How long this may run before the worker kills it.
      */
     public int $timeout;
 
@@ -67,22 +83,30 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      * It is not what makes summarising twice impossible, and it was a mistake to treat it
      * as though it were. The TTL starts when the job is dispatched, not when a worker picks
      * it up, so a job that waits in a queue and then runs can outlive its own lock. The
-     * claim in handle() is the guarantee; this is the optimisation that usually saves us
+     * claim in execute() is the guarantee; this is the optimisation that usually saves us
      * needing it.
      */
     public int $uniqueFor;
 
-    public function __construct(public int $summaryId)
-    {
+    /**
+     * The collaborators, taken here rather than by the method that uses them.
+     *
+     * Nothing about them reaches the queue payload either way, which was the reason the job
+     * this replaced took them as arguments to handle(): the worker resolves the action from
+     * the container before calling execute(), so the constructor is the container's business
+     * and not the payload's. A test can still swap any of them in the container.
+     *
+     * Worth knowing when adding another: the package resolves the action once per queueable
+     * property it copies, so this runs a handful of times per dispatch, in the web request.
+     * Cheap while every dependency is cheap to build, and only that while.
+     */
+    public function __construct(
+        private readonly LookupVideo $lookupVideo,
+        private readonly FetchTranscript $fetchTranscript,
+        private readonly SummariseTranscript $summariseTranscript,
+    ) {
         $this->timeout = config()->integer('summaries.timeout');
         $this->uniqueFor = $this->timeout;
-
-        /*
-         * Its own connection, which is where its retry_after lives; see config/queue.php.
-         * Set here rather than as a property because Queueable already declares an
-         * untyped $connection that a typed override is not allowed to narrow.
-         */
-        $this->onConnection('summaries');
     }
 
     /**
@@ -90,16 +114,50 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      *
      * Keyed on the row and not on the video code, which is the same key under another name:
      * video_id carries a unique index, so a row is a video and there can never be a second
-     * row to key a second job on. The row's id is the one the job already holds without
+     * row to key a second job on. The row's id is the one the caller already holds without
      * going to the database to ask for it.
+     *
+     * ActionJob qualifies this with the action's own name before it becomes a lock key,
+     * so two actions keyed on the same row do not collide.
      */
-    public function uniqueId(): string
+    public function uniqueId(int $summaryId): string
     {
-        return (string) $this->summaryId;
+        return (string) $summaryId;
     }
 
     /**
-     * Execute the job.
+     * What this looks like on the Horizon dashboard.
+     *
+     * Both names for the same thing, because the two questions asked of that dashboard are
+     * asked in different currencies: an id is what a log line or a support message carries,
+     * and a video code is what somebody watching the queue actually recognises.
+     *
+     * The code is looked up rather than carried, so execute() keeps the single parameter it
+     * needs and nothing is passed along purely to be printed. One indexed read at dispatch.
+     *
+     * The argument is required, which is only safe because App\Jobs\ActionJob hands its parent a
+     * class name rather than this instance: Spatie's own constructor asks an action for its tags
+     * before it knows what the action is being run over, and it is that call - the one that never
+     * happens here - which would need a default to survive.
+     *
+     * @return string[]
+     */
+    public function tags(int $summaryId): array
+    {
+        $tags = [self::class, 'summary:'.$summaryId];
+
+        $videoId = Summary::query()->whereKey($summaryId)->value('video_id');
+
+        /* Absent only if the row has gone between dispatch and here, which is not worth failing over. */
+        if (is_string($videoId)) {
+            $tags[] = 'video:'.$videoId;
+        }
+
+        return $tags;
+    }
+
+    /**
+     * Summarise the video.
      *
      * Three things happen here in an order chosen by what each one costs. The video is looked
      * up, because a video that does not exist should not have a transcript fetched for it. The
@@ -107,34 +165,27 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
      * about it. Only then is anything summarised. Each step can write the row off on its own,
      * and the two before the last are the cheap ones on purpose.
      *
-     * Every timeout involved is now set rather than inherited, which was the open question
-     * while this was a placeholder. The prompts get summaries.model_timeout, well past the
-     * SDK's sixty second default; the whole job gets summaries.timeout; and the connection's
-     * retry_after is derived from that in config/queue.php so the queue cannot hand this to a
-     * second worker while the first is still running. The claim below makes that safe in any
-     * case, but a second worker producing a summary nobody reads is still waste.
+     * Every timeout involved is set rather than inherited. The prompts get
+     * summaries.model_timeout, well past the SDK's sixty second default; the whole job gets
+     * summaries.timeout; and the connection's retry_after is derived from that in config/queue.php
+     * so the queue cannot hand this to a second worker while the first is still running. The claim
+     * below makes that safe in any case, but a second worker producing a summary nobody reads is
+     * still waste.
      *
      * The tests call this method directly rather than dispatching, because naming a connection
-     * above overrides the sync default in phpunit.xml - a dispatched job is queued rather than
-     * run. Worth knowing before writing a test that expects a submitted video to be summarised
-     * by the time the request comes back: it will not be.
-     *
-     * The collaborators arrive by method injection rather than through the constructor, so
-     * nothing about them is serialised into the queue payload and a test can swap them in the
-     * container.
+     * above overrides the sync default in phpunit.xml - ->onQueue()->execute() is queued rather
+     * than run. Worth knowing before writing a test that expects a submitted video to be
+     * summarised by the time the request comes back: it will not be.
      */
-    public function handle(
-        LookupVideo $lookupVideo,
-        FetchTranscript $fetchTranscript,
-        SummariseTranscript $summariseTranscript,
-    ): void {
+    public function execute(int $summaryId): void
+    {
         /*
          * Loaded here rather than carried, so what this reads is what is in the database at
          * the moment it runs rather than whatever was true when the job was queued. findOrFail
          * because a summary is never deleted: if one has been, that is worth a failure and a
          * log line rather than a job that quietly does nothing.
          */
-        $summary = Summary::findOrFail($this->summaryId);
+        $summary = Summary::findOrFail($summaryId);
 
         /*
          * Anything but pending and there is nothing to do here.
@@ -183,7 +234,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
         $claimedAt = Date::now();
 
         $claimed = Summary::query()
-            ->whereKey($this->summaryId)
+            ->whereKey($summaryId)
             ->where('status', SummaryStatus::Pending)
             ->whereNull('started_at')
             ->update(['started_at' => $claimedAt]);
@@ -213,7 +264,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * rate limit, and every duplicate would otherwise make the same two requests before
          * discovering it had nothing to do.
          */
-        $video = $lookupVideo->execute($summary->video_id);
+        $video = $this->lookupVideo->execute($summary->video_id);
 
         $error = match ($video->presence) {
             VideoPresence::Missing => SummaryError::NotFound,
@@ -233,7 +284,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
             return;
         }
 
-        $transcript = $this->transcriptFor($summary, $fetchTranscript);
+        $transcript = $this->transcriptFor($summary);
 
         $transcriptError = match ($transcript->presence) {
             TranscriptPresence::Missing => SummaryError::NoTranscript,
@@ -268,7 +319,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
             'transcript_language' => $transcript->language,
         ]);
 
-        $outline = $summariseTranscript->execute($transcript);
+        $outline = $this->summariseTranscript->execute($transcript);
 
         /*
          * By key, and not $summary->update() like the write fifteen lines above it. The
@@ -300,7 +351,7 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
          * affect nothing at all, which is what it should do.
          */
         $written = Summary::query()
-            ->whereKey($this->summaryId)
+            ->whereKey($summaryId)
             ->where('started_at', $claimedAt)
             ->update([
                 'status' => SummaryStatus::Ready,
@@ -332,80 +383,31 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
     }
 
     /**
-     * The words to summarise, fetched or remembered.
+     * Handle a failure.
      *
-     * A row that already holds one is one whose last attempt got this far and then failed at the
-     * model, and the retry that produced this job left the transcript alone precisely so it
-     * could be picked up again. Reusing it means the retry is a model call and nothing else: no
-     * second process, no second request to YouTube, and the new attempt reads exactly the words
-     * the failed one did rather than whatever the captions say today.
+     * Recording it on the row is what lets the page stop asking for an answer that is not
+     * coming.
      *
-     * Both columns or neither. They are written in one statement above, so a row holding one
-     * without the other is not something that happens; the check is what makes the language safe
-     * to hand over as a string rather than something to re-derive.
-     */
-    private function transcriptFor(Summary $summary, FetchTranscript $fetchTranscript): TranscriptResult
-    {
-        if ($summary->transcript !== null && $summary->transcript_language !== null) {
-            Log::debug('Summarising a video from the transcript already on the row', [
-                'video_id' => $summary->video_id,
-            ]);
-
-            return TranscriptResult::found($summary->transcript, $summary->transcript_language);
-        }
-
-        return $fetchTranscript->execute($summary->video_id);
-    }
-
-    /**
-     * Stop, with a reason somebody can read.
-     *
-     * Through the instance rather than by key, unlike the final write: every column named here
-     * differs from what that instance holds, so Eloquent has no chance to decide nothing
-     * changed. Status goes from pending to failed and the reason from null to something, both
-     * on every path that reaches this.
-     *
-     * It does overwrite a reason another process may have recorded, which is the opposite of
-     * what failed() does, and that asymmetry is deliberate. summaries:expire can write a row
-     * off as timed_out while this job is still working - the transcript branch below reaches
-     * here after a subprocess and an http request, so the window is real - and "that video has
-     * no subtitles" is both truer and more useful than "this took too long". The job has
-     * looked; the horizon only guessed. failed() keeps the first reason instead because a job
-     * that threw has nothing better to offer than "unknown".
-     */
-    private function giveUp(Summary $summary, SummaryError $error): void
-    {
-        $summary->update([
-            'status' => SummaryStatus::Failed,
-            'error' => $error,
-        ]);
-
-        Log::info('Gave up on a video before summarising it', [
-            'video_id' => $summary->video_id,
-            'error' => $error->value,
-        ]);
-    }
-
-    /**
-     * Handle a job failure.
-     *
-     * Recording the failure on the row is what lets the page stop asking for an answer
-     * that is not coming.
+     * The id arrives as an argument rather than off the instance, and that is the whole reason
+     * ActionJob overrides failed(): the package hands its own handler the exception and
+     * nothing else, having captured a callback bound to the action - which puts the action, and
+     * everything it was built with, into the queue payload. Resolving it fresh and passing the
+     * parameters back is what keeps the payload to an id.
      *
      * Guarded, because this can fire on a row that already holds a finished summary.
-     * handle() can succeed and the worker still die before it deletes the job, and the
+     * execute() can succeed and the worker still die before it deletes the job, and the
      * attempt after that one is free to throw. Marking the row failed then would hide a
      * perfectly good summary behind a "did not work" message. The failure is still
      * logged; only the row is left alone.
      *
-     * find rather than findOrFail, unlike handle(). One reason this runs at all is that
-     * handle() threw on a row that is not there, and throwing again from the handler for
+     * find rather than findOrFail, unlike execute(). One reason this runs at all is that
+     * execute() threw on a row that is not there, and throwing again from the handler for
      * that would lose the exception that explains it. The log line carries the id either
      * way, which is the only thing left to go on when the row is gone.
      */
-    public function failed(?Throwable $exception): void
+    public function failed(?Throwable $exception, int $summaryId): void
     {
-        $summary = Summary::find($this->summaryId);
+        $summary = Summary::find($summaryId);
 
         $ready = $summary?->status === SummaryStatus::Ready;
 
@@ -430,10 +432,65 @@ class SummariseVideo implements ShouldBeUnique, ShouldQueue
         }
 
         Log::error('Summarising a video failed', [
-            'summary_id' => $this->summaryId,
+            'summary_id' => $summaryId,
             'video_id' => $summary?->video_id,
             'already_summarised' => $ready,
             'exception' => $exception?->getMessage(),
+        ]);
+    }
+
+    /**
+     * The words to summarise, fetched or remembered.
+     *
+     * A row that already holds one is one whose last attempt got this far and then failed at the
+     * model, and the retry that produced this job left the transcript alone precisely so it
+     * could be picked up again. Reusing it means the retry is a model call and nothing else: no
+     * second process, no second request to YouTube, and the new attempt reads exactly the words
+     * the failed one did rather than whatever the captions say today.
+     *
+     * Both columns or neither. They are written in one statement above, so a row holding one
+     * without the other is not something that happens; the check is what makes the language safe
+     * to hand over as a string rather than something to re-derive.
+     */
+    private function transcriptFor(Summary $summary): TranscriptResult
+    {
+        if ($summary->transcript !== null && $summary->transcript_language !== null) {
+            Log::debug('Summarising a video from the transcript already on the row', [
+                'video_id' => $summary->video_id,
+            ]);
+
+            return TranscriptResult::found($summary->transcript, $summary->transcript_language);
+        }
+
+        return $this->fetchTranscript->execute($summary->video_id);
+    }
+
+    /**
+     * Stop, with a reason somebody can read.
+     *
+     * Through the instance rather than by key, unlike the final write: every column named here
+     * differs from what that instance holds, so Eloquent has no chance to decide nothing
+     * changed. Status goes from pending to failed and the reason from null to something, both
+     * on every path that reaches this.
+     *
+     * It does overwrite a reason another process may have recorded, which is the opposite of
+     * what failed() does, and that asymmetry is deliberate. summaries:expire can write a row
+     * off as timed_out while this job is still working - the transcript branch above reaches
+     * here after a subprocess and an http request, so the window is real - and "that video has
+     * no subtitles" is both truer and more useful than "this took too long". The job has
+     * looked; the horizon only guessed. failed() keeps the first reason instead because a job
+     * that threw has nothing better to offer than "unknown".
+     */
+    private function giveUp(Summary $summary, SummaryError $error): void
+    {
+        $summary->update([
+            'status' => SummaryStatus::Failed,
+            'error' => $error,
+        ]);
+
+        Log::info('Gave up on a video before summarising it', [
+            'video_id' => $summary->video_id,
+            'error' => $error->value,
         ]);
     }
 }
