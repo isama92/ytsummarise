@@ -10,7 +10,6 @@ use App\Services\Ai\Agents\TranslateSummary;
 use App\Services\Ai\Data\SummaryOutline;
 use App\Services\Ai\Data\SummarySections;
 use App\Services\YouTube\Data\TranscriptResult;
-use Carbon\CarbonImmutable;
 use Laravel\Ai\Responses\StructuredAgentResponse;
 
 /**
@@ -32,9 +31,9 @@ use Laravel\Ai\Responses\StructuredAgentResponse;
  */
 class TranslateOutline extends SummarisingStep
 {
-    public function execute(int $summaryId, CarbonImmutable $claimedAt): void
+    public function execute(int $summaryId, string $claim): void
     {
-        $summary = $this->claimed($summaryId, $claimedAt);
+        $summary = $this->claimed($summaryId, $claim);
 
         if (! $summary instanceof Summary) {
             return;
@@ -66,7 +65,7 @@ class TranslateOutline extends SummarisingStep
          * ready summary, because Eloquent leaves a column out of the statement when it believes
          * the value has not changed.
          */
-        $this->write($summaryId, $claimedAt, [
+        $this->write($summaryId, $claim, [
             'status' => SummaryStatus::Ready,
             'outline' => $outline->toArray(),
             'error' => null,

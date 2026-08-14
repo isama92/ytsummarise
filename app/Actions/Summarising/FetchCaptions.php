@@ -8,7 +8,6 @@ use App\Enums\SummaryError;
 use App\Models\Summary;
 use App\Services\YouTube\Actions\FetchTranscript;
 use App\Services\YouTube\Enums\TranscriptPresence;
-use Carbon\CarbonImmutable;
 
 /**
  * Step two: the words to summarise.
@@ -35,9 +34,9 @@ class FetchCaptions extends SummarisingStep
         parent::__construct();
     }
 
-    public function execute(int $summaryId, CarbonImmutable $claimedAt): void
+    public function execute(int $summaryId, string $claim): void
     {
-        $summary = $this->claimed($summaryId, $claimedAt);
+        $summary = $this->claimed($summaryId, $claim);
 
         if (! $summary instanceof Summary) {
             return;
@@ -56,12 +55,12 @@ class FetchCaptions extends SummarisingStep
         };
 
         if ($error instanceof SummaryError) {
-            $this->giveUp($summary, $error);
+            $this->giveUp($summary, $claim, $error);
 
             return;
         }
 
-        $this->write($summaryId, $claimedAt, [
+        $this->write($summaryId, $claim, [
             'transcript' => $transcript->text,
             'transcript_language' => $transcript->language,
         ]);

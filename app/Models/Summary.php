@@ -31,12 +31,14 @@ use Override;
  * @property string|null $title
  * @property string|null $transcript
  * @property string|null $transcript_language
+ * @property string|null $ideas
  * @property array<string, mixed>|null $outline
  * @property SummaryError|null $error
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
+ * @property string|null $claim
  */
-#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'ideas', 'outline', 'error', 'requested_at', 'started_at'])]
+#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'ideas', 'outline', 'error', 'requested_at', 'started_at', 'claim'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {

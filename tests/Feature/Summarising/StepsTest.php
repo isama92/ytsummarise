@@ -40,9 +40,9 @@ function claimedSummary(array $attributes = []): array
 test('finding the video writes the title and nothing else', function (): void {
     fakeYouTube('Never Gonna Give You Up');
 
-    [$summary, $claimedAt] = claimedSummary();
+    [$summary, $claim] = claimedSummary();
 
-    app(FindVideo::class)->execute($summary->id, $claimedAt);
+    app(FindVideo::class)->execute($summary->id, $claim);
 
     $summary->refresh();
 
@@ -60,9 +60,9 @@ test('finding the video writes the title and nothing else', function (): void {
 test('fetching the captions writes the transcript and its language together', function (): void {
     fakeTranscript('We are no strangers to love.', 'nl');
 
-    [$summary, $claimedAt] = claimedSummary();
+    [$summary, $claim] = claimedSummary();
 
-    app(FetchCaptions::class)->execute($summary->id, $claimedAt);
+    app(FetchCaptions::class)->execute($summary->id, $claim);
 
     $summary->refresh();
 
@@ -79,12 +79,12 @@ test('fetching the captions writes the transcript and its language together', fu
 test('captions already on the row are not fetched again', function (): void {
     Process::fake();
 
-    [$summary, $claimedAt] = claimedSummary([
+    [$summary, $claim] = claimedSummary([
         'transcript' => 'The words from the attempt before.',
         'transcript_language' => 'en',
     ]);
 
-    app(FetchCaptions::class)->execute($summary->id, $claimedAt);
+    app(FetchCaptions::class)->execute($summary->id, $claim);
 
     expect($summary->fresh()?->transcript)->toBe('The words from the attempt before.');
 
@@ -94,12 +94,12 @@ test('captions already on the row are not fetched again', function (): void {
 test('drafting the ideas writes them for the step that reads them', function (): void {
     ExtractIdeas::fake(fn (): string => "An idea from the video\nAnother idea");
 
-    [$summary, $claimedAt] = claimedSummary([
+    [$summary, $claim] = claimedSummary([
         'transcript' => 'We are no strangers to love.',
         'transcript_language' => 'en',
     ]);
 
-    app(DraftIdeas::class)->execute($summary->id, $claimedAt);
+    app(DraftIdeas::class)->execute($summary->id, $claim);
 
     expect($summary->fresh()?->ideas)->toBe("An idea from the video\nAnother idea");
 });
@@ -109,13 +109,13 @@ test('drafting the ideas writes them for the step that reads them', function ():
  * writing the summary costs one model call to repeat rather than two.
  */
 test('ideas already on the row are not drafted again', function (): void {
-    [$summary, $claimedAt] = claimedSummary([
+    [$summary, $claim] = claimedSummary([
         'transcript' => 'We are no strangers to love.',
         'transcript_language' => 'en',
         'ideas' => 'What the attempt before made of them.',
     ]);
 
-    app(DraftIdeas::class)->execute($summary->id, $claimedAt);
+    app(DraftIdeas::class)->execute($summary->id, $claim);
 
     expect($summary->fresh()?->ideas)->toBe('What the attempt before made of them.');
 
@@ -135,13 +135,13 @@ test('composing the summary reads the ideas, not the transcript', function (): v
         'takeaways' => ['The thing worth remembering'],
     ]);
 
-    [$summary, $claimedAt] = claimedSummary([
+    [$summary, $claim] = claimedSummary([
         'transcript' => 'We are no strangers to love.',
         'transcript_language' => 'en',
         'ideas' => 'What the video says.',
     ]);
 
-    app(ComposeSummary::class)->execute($summary->id, $claimedAt);
+    app(ComposeSummary::class)->execute($summary->id, $claim);
 
     $summary->refresh();
 
@@ -164,7 +164,7 @@ test('composing the summary reads the ideas, not the transcript', function (): v
  * number on the dashboard would mean a different thing per video and would jump from 3/4 to done.
  */
 test('an English video still runs the last step, which finishes it', function (): void {
-    [$summary, $claimedAt] = claimedSummary([
+    [$summary, $claim] = claimedSummary([
         'transcript' => 'We are no strangers to love.',
         'transcript_language' => 'en',
         'ideas' => 'What the video says.',
@@ -175,7 +175,7 @@ test('an English video still runs the last step, which finishes it', function ()
         ],
     ]);
 
-    app(TranslateOutline::class)->execute($summary->id, $claimedAt);
+    app(TranslateOutline::class)->execute($summary->id, $claim);
 
     $summary->refresh();
 
@@ -194,7 +194,7 @@ test('a video in another language is translated before it is finished', function
         'takeaways' => [],
     ]);
 
-    [$summary, $claimedAt] = claimedSummary([
+    [$summary, $claim] = claimedSummary([
         'transcript' => 'Wij zijn geen vreemden voor de liefde.',
         'transcript_language' => 'nl',
         'ideas' => 'Wat de video zegt.',
@@ -205,7 +205,7 @@ test('a video in another language is translated before it is finished', function
         ],
     ]);
 
-    app(TranslateOutline::class)->execute($summary->id, $claimedAt);
+    app(TranslateOutline::class)->execute($summary->id, $claim);
 
     $summary->refresh();
 
@@ -223,15 +223,79 @@ test('a video in another language is translated before it is finished', function
 test('no step but the last one marks a summary ready', function (): void {
     fakeSummarisableVideo();
 
-    [$summary, $claimedAt] = claimedSummary();
+    [$summary, $claim] = claimedSummary();
 
     foreach ([FindVideo::class, FetchCaptions::class, DraftIdeas::class, ComposeSummary::class] as $step) {
-        app($step)->execute($summary->id, $claimedAt);
+        app($step)->execute($summary->id, $claim);
 
         expect($summary->fresh()?->status)->toBe(SummaryStatus::Pending);
     }
 
-    app(TranslateOutline::class)->execute($summary->id, $claimedAt);
+    app(TranslateOutline::class)->execute($summary->id, $claim);
 
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
+});
+
+/*
+ * A worker can write the outline and then be killed before it deletes the job - out of memory, a
+ * signal, maxTime - and retry_after hands the same job to the next worker. Nothing else would
+ * notice, because only TranslateOutline moves the row off pending, so without a guard here the
+ * model is prompted a second time at full price.
+ */
+test('a redelivered compose step does not pay for a second summary', function (): void {
+    [$summary, $claim] = claimedSummary([
+        'transcript' => 'We are no strangers to love.',
+        'transcript_language' => 'en',
+        'ideas' => 'What the video says.',
+        'outline' => [
+            'language' => 'en',
+            'original' => ['headline' => 'The summary the first delivery wrote', 'points' => [], 'takeaways' => []],
+            'english' => null,
+        ],
+    ]);
+
+    app(ComposeSummary::class)->execute($summary->id, $claim);
+
+    expect($summary->fresh()?->outline['original']['headline'])->toBe('The summary the first delivery wrote');
+
+    /* Deliberately unfaked, so a second pass would fail rather than pass unnoticed. */
+    CreateSummary::assertNeverPrompted();
+});
+
+/*
+ * An empty answer is the feature being broken rather than something true about the video, so it
+ * fails rather than being stored.
+ *
+ * Storing it would be permanent: the skip guard would match forever, ComposeSummary would prompt
+ * a model with nothing, and no retry could ever recover the video without editing the row by hand.
+ */
+test('a model that returns no ideas fails rather than storing nothing', function (): void {
+    ExtractIdeas::fake(fn (): string => '   ');
+
+    [$summary, $claim] = claimedSummary([
+        'transcript' => 'We are no strangers to love.',
+        'transcript_language' => 'en',
+    ]);
+
+    expect(fn () => app(DraftIdeas::class)->execute($summary->id, $claim))
+        ->toThrow(UnexpectedValueException::class)
+        ->and($summary->fresh()?->ideas)->toBeNull();
+});
+
+/*
+ * And an empty string that somehow reached the column is not read as "already drafted", so a row
+ * left that way by an older deploy can still be recovered by asking again.
+ */
+test('ideas stored as an empty string are drafted again', function (): void {
+    ExtractIdeas::fake(fn (): string => 'What the video says.');
+
+    [$summary, $claim] = claimedSummary([
+        'transcript' => 'We are no strangers to love.',
+        'transcript_language' => 'en',
+        'ideas' => '',
+    ]);
+
+    app(DraftIdeas::class)->execute($summary->id, $claim);
+
+    expect($summary->fresh()?->ideas)->toBe('What the video says.');
 });

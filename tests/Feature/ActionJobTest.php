@@ -290,9 +290,9 @@ test('a failure reaches the action with the row it was working on', function ():
     Log::spy();
 
     $summary = Summary::factory()->pending()->create();
-    $claimedAt = claimSummary($summary->id);
+    $claim = claimSummary($summary->id);
 
-    $job = new ActionJob(app(DraftIdeas::class), [$summary->id, $claimedAt]);
+    $job = new ActionJob(app(DraftIdeas::class), [$summary->id, $claim, $summary->video_id]);
 
     $job->failed(new RuntimeException('the model refused'));
 
@@ -308,9 +308,9 @@ test('a failure with no exception to report is still recorded', function (): voi
     Log::spy();
 
     $summary = Summary::factory()->pending()->create();
-    $claimedAt = claimSummary($summary->id);
+    $claim = claimSummary($summary->id);
 
-    (new ActionJob(app(DraftIdeas::class), [$summary->id, $claimedAt]))->failed(null);
+    (new ActionJob(app(DraftIdeas::class), [$summary->id, $claim, $summary->video_id]))->failed(null);
 
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Failed);
 });

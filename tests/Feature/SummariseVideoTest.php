@@ -345,8 +345,8 @@ test('an attempt written off part way through stops rather than finishing', func
 test('a second job for a video somebody is already working on does nothing', function (): void {
     Process::fake();
 
-    $claimedAt = Date::now()->subMinute();
-    $summary = Summary::factory()->processing()->create(['started_at' => $claimedAt]);
+    $claim = Date::now()->subMinute();
+    $summary = Summary::factory()->processing()->create(['started_at' => $claim]);
 
     /*
      * Nothing else is faked on purpose. A job that bounces off the claim must not have looked
@@ -360,7 +360,7 @@ test('a second job for a video somebody is already working on does nothing', fun
     expect($summary->status)->toBe(SummaryStatus::Pending)
         ->and($summary->outline)->toBeNull()
         /* Not re-stamped either: the claim belongs to whoever took it. */
-        ->and($summary->started_at?->timestamp)->toBe($claimedAt->timestamp);
+        ->and($summary->started_at?->timestamp)->toBe($claim->timestamp);
 
     Process::assertNothingRan();
 });
@@ -420,6 +420,7 @@ test('a job whose attempt was superseded does not write its summary', function (
         Summary::query()->whereKey($summary->getKey())->update([
             'status' => SummaryStatus::Pending,
             'started_at' => Date::now()->addMinute(),
+            'claim' => 'the-attempt-that-replaced-it',
         ]);
 
         return 'An idea';
@@ -437,6 +438,7 @@ test('a job whose attempt was superseded does not write its summary', function (
 
     /* Left exactly as the newer attempt has it: still pending, and still holding its claim. */
     expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->claim)->toBe('the-attempt-that-replaced-it')
         ->and($summary->outline)->toBeNull();
 
     /* And said so, because otherwise it reads as an ordinary success in a worker log. */
@@ -542,7 +544,7 @@ test('the queue cannot reserve a step again while it is still running', function
          * properties off the action at dispatch and reads them as properties rather than as
          * methods, so a timeout expressed any other way would be dropped in silence.
          */
-        ->and(new ActionJob($action, [1, Date::now()]))
+        ->and(new ActionJob($action, [1, 'a-claim', 'dQw4w9WgXcQ']))
         ->toHaveProperty('timeout', $timeout)
         ->toHaveProperty('connection', 'summaries')
         ->and(config()->integer('horizon.defaults.supervisor-summaries.timeout'))

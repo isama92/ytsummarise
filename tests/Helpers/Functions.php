@@ -13,12 +13,12 @@ use App\Services\Ai\Agents\CreateSummary;
 use App\Services\Ai\Agents\ExtractIdeas;
 use App\Services\Ai\Agents\TranslateSummary;
 use App\Services\YouTube\Requests\OembedRequest;
-use Carbon\CarbonImmutable;
 use Illuminate\Process\FakeProcessResult;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Str;
 use Saloon\Exceptions\Request\FatalRequestException;
 use Saloon\Http\Faking\MockResponse;
 use Saloon\Http\PendingRequest;
@@ -62,23 +62,22 @@ function summarisingSteps(): array
 }
 
 /**
- * Take the claim the way SummariseVideo does, and hand back what it claimed with.
+ * Take the claim the way SummariseVideo does, and hand back the token it claimed with.
  *
- * Every step is conditional on this value, so a test running steps by hand needs the same one
- * the entry action would have written. Truncation is deliberately not worked around: the column
- * is a timestamp(0) and the query grammar formats to the second on both the write and the
- * comparison, which is why a Carbon carrying microseconds matches the row it wrote at all.
+ * Every step reads and writes conditionally on this value, so a test running steps by hand needs
+ * the same one the entry action would have written. A token rather than the moment, because the
+ * moment cannot tell two attempts apart inside one second - see the migration that added it.
  */
-function claimSummary(int $summaryId): CarbonImmutable
+function claimSummary(int $summaryId): string
 {
-    $claimedAt = Date::now();
+    $claim = (string) Str::ulid();
 
     Summary::query()
         ->whereKey($summaryId)
         ->whereNull('started_at')
-        ->update(['started_at' => $claimedAt]);
+        ->update(['started_at' => Date::now(), 'claim' => $claim]);
 
-    return $claimedAt;
+    return $claim;
 }
 
 /**
@@ -97,12 +96,12 @@ function claimSummary(int $summaryId): CarbonImmutable
  * this attempt. Cancelling the batch is the belt to that braces, and is what a test wanting to
  * pin it should assert on directly.
  */
-function summariseVideo(int $summaryId, ?CarbonImmutable $claimedAt = null): void
+function summariseVideo(int $summaryId, ?string $claim = null): void
 {
-    $claimedAt ??= claimSummary($summaryId);
+    $claim ??= claimSummary($summaryId);
 
     foreach (summarisingSteps() as $step) {
-        app($step)->execute($summaryId, $claimedAt);
+        app($step)->execute($summaryId, $claim);
     }
 }
 

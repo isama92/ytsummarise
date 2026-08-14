@@ -8,7 +8,6 @@ use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
 use App\Models\Summary;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
 use Spatie\QueueableAction\QueueableAction;
 use Throwable;
@@ -28,6 +27,12 @@ use Throwable;
  * point the first attempt's remaining steps are still out there, holding a claim that no longer
  * matches. Every read and every write below is conditional on it, so those steps do nothing at
  * all rather than writing an older summary over a newer attempt.
+ *
+ * Every step is also handed the video code, which none of their execute() methods declares.
+ * That is on purpose rather than an oversight: it is only ever wanted for the Horizon tag, and
+ * looking it up in tags() instead meant five identical reads of one immutable column while the
+ * chain was being assembled, in the web request. PHP drops arguments a userland method does not
+ * declare, so a step takes the two it works with and tags() takes all three.
  *
  * No step keys its own lock, and that is not an oversight to tidy up. A batch and a chain reach
  * the queue by different routes: Batch::add() pushes the first job through Queue::bulk(), which
@@ -91,18 +96,9 @@ abstract class SummarisingStep
      *
      * @return string[]
      */
-    public function tags(int $summaryId, CarbonImmutable $claimedAt): array
+    public function tags(int $summaryId, string $claim, string $videoId): array
     {
-        $tags = [static::class, 'summary:'.$summaryId];
-
-        $videoId = Summary::query()->whereKey($summaryId)->value('video_id');
-
-        /* Absent only if the row has gone between dispatch and here, which is not worth failing over. */
-        if (is_string($videoId)) {
-            $tags[] = 'video:'.$videoId;
-        }
-
-        return $tags;
+        return [static::class, 'summary:'.$summaryId, 'video:'.$videoId];
     }
 
     /**
@@ -125,13 +121,23 @@ abstract class SummarisingStep
      * that is not there, and throwing again from the handler for that would lose the exception
      * that explains it.
      */
-    public function failed(?Throwable $exception, int $summaryId, CarbonImmutable $claimedAt): void
+    public function failed(?Throwable $exception, int $summaryId, string $claim): void
     {
         $summary = Summary::find($summaryId);
 
         $ready = $summary?->status === SummaryStatus::Ready;
 
-        if ($summary instanceof Summary && ! $ready) {
+        /*
+         * Conditional on the claim for the same reason every other write here is, and this is
+         * the one where getting it wrong costs the most. A step can throw ten minutes after it
+         * started - a model call is most of that - and by then summaries:expire may have written
+         * the attempt off and a resubmission may have started another one. Writing unconditionally
+         * would mark that live, half-paid-for attempt as failed, and its remaining steps would
+         * then find the row no longer pending and quietly do nothing.
+         */
+        $ours = $summary?->claim === $claim;
+
+        if ($summary instanceof Summary && $ours && ! $ready) {
             $summary->update([
                 'status' => SummaryStatus::Failed,
                 'outline' => null,
@@ -155,7 +161,9 @@ abstract class SummarisingStep
             'step' => static::class,
             'summary_id' => $summaryId,
             'video_id' => $summary?->video_id,
-            'claimed_at' => $claimedAt->toIso8601String(),
+            'claim' => $claim,
+            /* Logged either way: a failure nobody recorded is the one worth being able to find. */
+            'recorded' => $ours && ! $ready,
             'already_summarised' => $ready,
             'exception' => $exception?->getMessage(),
         ]);
@@ -173,19 +181,19 @@ abstract class SummarisingStep
      * chain that throws takes the batch down with it, and a summary deleted mid-chain is an
      * ordinary outcome of a retention window rather than something worth a stack trace.
      */
-    protected function claimed(int $summaryId, CarbonImmutable $claimedAt): ?Summary
+    protected function claimed(int $summaryId, string $claim): ?Summary
     {
         $summary = Summary::query()
             ->whereKey($summaryId)
             ->where('status', SummaryStatus::Pending)
-            ->where('started_at', $claimedAt)
+            ->where('claim', $claim)
             ->first();
 
         if (! $summary instanceof Summary) {
             Log::debug('Left a summarising step alone, the attempt it belongs to is over', [
                 'step' => static::class,
                 'summary_id' => $summaryId,
-                'claimed_at' => $claimedAt->toIso8601String(),
+                'claim' => $claim,
             ]);
         }
 
@@ -208,11 +216,11 @@ abstract class SummarisingStep
      *
      * @param  array<string, mixed>  $values
      */
-    protected function write(int $summaryId, CarbonImmutable $claimedAt, array $values): void
+    protected function write(int $summaryId, string $claim, array $values): void
     {
         $written = Summary::query()
             ->whereKey($summaryId)
-            ->where('started_at', $claimedAt)
+            ->where('claim', $claim)
             ->update($values);
 
         if ($written === 0) {
@@ -225,7 +233,7 @@ abstract class SummarisingStep
             Log::warning('A summarising step finished work that had already been superseded', [
                 'step' => static::class,
                 'summary_id' => $summaryId,
-                'claimed_at' => $claimedAt->toIso8601String(),
+                'claim' => $claim,
             ]);
         }
     }
@@ -247,13 +255,29 @@ abstract class SummarisingStep
      * timed_out while a step is still working, and "that video has no subtitles" is both truer
      * and more useful than "this took too long". The step has looked; the horizon only guessed.
      */
-    protected function giveUp(Summary $summary, SummaryError $error): void
+    protected function giveUp(Summary $summary, string $claim, SummaryError $error): void
     {
-        $summary->update([
+        /*
+         * Through write() rather than through the instance, which is a change from the single job
+         * this came from. There, giving up happened moments after the claim was checked; here a
+         * step can spend four minutes in yt-dlp before deciding, and an attempt written off and
+         * replaced in that window would otherwise be written off again on the new attempt's row.
+         *
+         * It does still overwrite a reason another process recorded, which is the opposite of what
+         * failed() does and is deliberate: summaries:expire can write a row off as timed_out while
+         * a step is still working, and "that video has no subtitles" is both truer and more useful
+         * than "this took too long". The step has looked; the horizon only guessed. Overwriting is
+         * safe precisely because the claim still matches - the row is this attempt's.
+         */
+        $this->write($summary->id, $claim, [
             'status' => SummaryStatus::Failed,
             'error' => $error,
         ]);
 
+        /*
+         * Cancelled whether or not that write landed. The batch is this attempt's either way, and
+         * stopping its remaining steps is right even when the row has moved on without them.
+         */
         $this->actionJob?->batch()?->cancel();
 
         Log::info('Gave up on a video part way through summarising it', [

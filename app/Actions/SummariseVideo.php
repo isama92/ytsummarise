@@ -10,15 +10,17 @@ use App\Actions\Summarising\FetchCaptions;
 use App\Actions\Summarising\FindVideo;
 use App\Actions\Summarising\TranslateOutline;
 use App\Enums\Queue;
+use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
 use App\Models\Summary;
-use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Spatie\QueueableAction\QueueableAction;
+use Throwable;
 
 /**
  * Starts the summary for one video, and does none of it.
@@ -205,17 +207,21 @@ class SummariseVideo
          * attempt off in between, and claiming it then pays for a summary the page has already
          * said did not work.
          *
-         * It also records when the work actually began, and the moment is what every step is
-         * handed: each of them writes conditionally on it, so an attempt that has been replaced
-         * stops writing rather than stamping an older summary over a newer one.
+         * Two columns, doing two different jobs. started_at records when the work began, which is
+         * what the page counts up from and what tells a queued attempt from a running one. The
+         * claim identifies the attempt, and it is a token rather than that moment because a
+         * timestamp cannot do it: the column is a timestamp(0) and the query grammar binds dates
+         * to the second on both the write and the comparison, so two attempts inside one second
+         * would be indistinguishable and the older one's steps would write over the newer one's
+         * work. Every step is handed the token and writes conditionally on it.
          */
-        $claimedAt = Date::now();
+        $claim = (string) Str::ulid();
 
         $claimed = Summary::query()
             ->whereKey($summaryId)
             ->where('status', SummaryStatus::Pending)
             ->whereNull('started_at')
-            ->update(['started_at' => $claimedAt]);
+            ->update(['started_at' => Date::now(), 'claim' => $claim]);
 
         if ($claimed === 0) {
             /*
@@ -249,7 +255,7 @@ class SummariseVideo
          * batch's options are what the chain's continuations inherit, so saying it once here is
          * what stops step two landing on the default queue where nothing works it.
          */
-        Bus::batch([$this->chainActions($summaryId, $claimedAt)])
+        Bus::batch([$this->chainActions($summaryId, $claim, $summary->video_id)])
             ->name("Summarise {$summary->video_id} ({$summaryId})")
             ->onConnection('summaries')
             ->onQueue(Queue::Summaries->value)
@@ -257,10 +263,56 @@ class SummariseVideo
     }
 
     /**
+     * Handle a failure of the dispatch itself.
+     *
+     * Small window, and an expensive one to leave open. Everything between claiming the row and
+     * the batch reaching Redis happens here: if the dispatch throws - Redis unreachable, the
+     * job_batches insert refused - the row is left pending with a claim on it and no batch behind
+     * it. The controller reads a pending row as an attempt already under way and queues nothing
+     * for whoever asks again, and the claim turns away any dispatch that does get through, so
+     * without this the video is stuck until summaries:expire notices hours later, with nothing in
+     * the log to say why.
+     *
+     * This action lost its handler when it stopped doing the work, and the steps that inherited
+     * one cannot cover this: the failure is before any of them exists.
+     *
+     * Guarded against a finished summary the same way a step's is, and for the same reason: this
+     * can fire on a redelivery of a dispatch that already succeeded.
+     */
+    public function failed(?Throwable $exception, int $summaryId): void
+    {
+        $summary = Summary::find($summaryId);
+
+        $ready = $summary?->status === SummaryStatus::Ready;
+
+        if ($summary instanceof Summary && ! $ready) {
+            $summary->update([
+                'status' => SummaryStatus::Failed,
+
+                /*
+                 * The first explanation wins, as everywhere else: a row already carrying a reason
+                 * was written off by summaries:expire, and that tells whoever reads it more than
+                 * a dispatch that then threw.
+                 */
+                'error' => $summary->error ?? SummaryError::Unknown,
+            ]);
+        }
+
+        Log::error('Queueing a summary failed', [
+            'summary_id' => $summaryId,
+            'video_id' => $summary?->video_id,
+            'already_summarised' => $ready,
+            'exception' => $exception?->getMessage(),
+        ]);
+    }
+
+    /**
      * The five steps, in the order they have to run.
      *
-     * Every one takes the same two arguments, and both are needed: the id says which row, the
-     * claim says which attempt on it. See App\Actions\Summarising\SummarisingStep for what a
+     * Every one takes the same three arguments. The id says which row and the token says which
+     * attempt on it, and both are read by every step. The video code is only ever wanted for the
+     * Horizon tag, which is why no step's execute() declares it: passing it costs nothing and
+     * saves five identical reads of an immutable column while this chain is being built. See App\Actions\Summarising\SummarisingStep for what a
      * step does with them.
      *
      * TranslateOutline is in the list for every video, including the English ones it has nothing
@@ -269,14 +321,14 @@ class SummariseVideo
      *
      * @return list<ShouldQueue>
      */
-    private function chainActions(int $summaryId, CarbonImmutable $claimedAt): array
+    private function chainActions(int $summaryId, string $claim, string $videoId): array
     {
         return [
-            new ActionJob(FindVideo::class, [$summaryId, $claimedAt]),
-            new ActionJob(FetchCaptions::class, [$summaryId, $claimedAt]),
-            new ActionJob(DraftIdeas::class, [$summaryId, $claimedAt]),
-            new ActionJob(ComposeSummary::class, [$summaryId, $claimedAt]),
-            new ActionJob(TranslateOutline::class, [$summaryId, $claimedAt]),
+            new ActionJob(FindVideo::class, [$summaryId, $claim, $videoId]),
+            new ActionJob(FetchCaptions::class, [$summaryId, $claim, $videoId]),
+            new ActionJob(DraftIdeas::class, [$summaryId, $claim, $videoId]),
+            new ActionJob(ComposeSummary::class, [$summaryId, $claim, $videoId]),
+            new ActionJob(TranslateOutline::class, [$summaryId, $claim, $videoId]),
         ];
     }
 }

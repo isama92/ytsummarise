@@ -77,9 +77,12 @@ class SummaryController extends Controller
          * A retry is a new attempt, so its clock starts again - which also puts it back at
          * the beginning of the horizon summaries:expire measures.
          *
-         * The claim goes with it. Leaving started_at set would make the row unclaimable, and
-         * every job queued for it from then on would find somebody else apparently working
-         * on it and return having done nothing at all.
+         * The claim goes with it, both halves. Leaving started_at set would make the row
+         * unclaimable, and every job queued for it from then on would find somebody else
+         * apparently working on it and return having done nothing at all. Leaving the token
+         * behind would be worse and quieter: the old attempt's steps are still out there, and a
+         * token they still match is a licence to write their older summary over whatever the new
+         * attempt produces.
          */
         if ($summary->status === SummaryStatus::Failed) {
             $summary->update([
@@ -89,8 +92,10 @@ class SummaryController extends Controller
                 /*
                  * The transcript stays. It belongs to the video rather than to the attempt, and
                  * leaving it is what lets a retry after a failed model call skip yt-dlp
-                 * entirely and re-read exactly the words the failed attempt did. The job picks
-                 * it up if it is there; see SummariseVideo::transcriptFor().
+                 * entirely and re-read exactly the words the failed attempt did. The step picks
+                 * it up if it is there; see App\Actions\Summarising\FetchCaptions. The ideas
+                 * the first model pass produced stay for the same reason, and are skipped the
+                 * same way by App\Actions\Summarising\DraftIdeas.
                  */
 
                 /*
@@ -101,6 +106,7 @@ class SummaryController extends Controller
                 'error' => null,
                 'requested_at' => Date::now(),
                 'started_at' => null,
+                'claim' => null,
             ]);
         }
 

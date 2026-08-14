@@ -8,7 +8,6 @@ use App\Enums\SummaryError;
 use App\Models\Summary;
 use App\Services\YouTube\Actions\LookupVideo;
 use App\Services\YouTube\Enums\VideoPresence;
-use Carbon\CarbonImmutable;
 
 /**
  * Step one: what the video actually is.
@@ -30,9 +29,9 @@ class FindVideo extends SummarisingStep
         parent::__construct();
     }
 
-    public function execute(int $summaryId, CarbonImmutable $claimedAt): void
+    public function execute(int $summaryId, string $claim): void
     {
-        $summary = $this->claimed($summaryId, $claimedAt);
+        $summary = $this->claimed($summaryId, $claim);
 
         if (! $summary instanceof Summary) {
             return;
@@ -53,11 +52,11 @@ class FindVideo extends SummarisingStep
          * watch.
          */
         if ($error instanceof SummaryError) {
-            $this->giveUp($summary, $error);
+            $this->giveUp($summary, $claim, $error);
 
             return;
         }
 
-        $this->write($summaryId, $claimedAt, ['title' => $video->title]);
+        $this->write($summaryId, $claim, ['title' => $video->title]);
     }
 }

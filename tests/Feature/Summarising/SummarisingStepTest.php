@@ -12,10 +12,12 @@ use App\Jobs\ActionJob;
 use App\Models\Summary;
 use App\Services\Ai\Agents\ExtractIdeas;
 use App\Services\YouTube\Requests\OembedRequest;
+use Illuminate\Process\FakeProcessResult;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Str;
 use Saloon\Http\Faking\MockResponse;
 use Saloon\Laravel\Facades\Saloon;
 
@@ -41,17 +43,17 @@ test('a step that gives up cancels the batch behind it', function (): void {
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 404)]);
 
     $summary = Summary::factory()->pending()->create();
-    $claimedAt = claimSummary($summary->id);
+    $claim = claimSummary($summary->id);
 
-    $batch = Bus::batch([new ActionJob(FindVideo::class, [$summary->id, $claimedAt])])
+    $batch = Bus::batch([new ActionJob(FindVideo::class, [$summary->id, $claim, $summary->video_id])])
         ->name('cancel me')
         ->dispatch();
 
     $step = app(FindVideo::class);
-    $step->actionJob = new ActionJob($step, [$summary->id, $claimedAt]);
+    $step->actionJob = new ActionJob($step, [$summary->id, $claim, $summary->video_id]);
     $step->actionJob->withBatchId($batch->id);
 
-    $step->execute($summary->id, $claimedAt);
+    $step->execute($summary->id, $claim);
 
     expect($summary->fresh()?->error)->toBe(SummaryError::NotFound)
         ->and(Bus::findBatch($batch->id)?->cancelled())->toBeTrue();
@@ -69,9 +71,9 @@ test('a step with no job behind it gives up without reaching for a batch', funct
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 404)]);
 
     $summary = Summary::factory()->pending()->create();
-    $claimedAt = claimSummary($summary->id);
+    $claim = claimSummary($summary->id);
 
-    expect(fn () => app(FindVideo::class)->execute($summary->id, $claimedAt))->not->toThrow(Throwable::class)
+    expect(fn () => app(FindVideo::class)->execute($summary->id, $claim))->not->toThrow(Throwable::class)
         ->and($summary->fresh()?->error)->toBe(SummaryError::NotFound);
 });
 
@@ -86,12 +88,13 @@ test('a step whose claim no longer matches the row does nothing', function (): v
 
     $summary = Summary::factory()->pending()->create([
         'started_at' => Date::now(),
+        'claim' => (string) Str::ulid(),
         'transcript' => 'The words a replaced attempt read.',
         'transcript_language' => 'en',
     ]);
 
-    /* An attempt from a minute ago, replaced since. */
-    app(DraftIdeas::class)->execute($summary->id, Date::now()->subMinute());
+    /* A step from the attempt this row's claim replaced. */
+    app(DraftIdeas::class)->execute($summary->id, (string) Str::ulid());
 
     expect($summary->fresh()?->ideas)->toBeNull();
 
@@ -105,10 +108,10 @@ test('a step whose claim no longer matches the row does nothing', function (): v
 test('a step whose row is gone or finished does nothing', function (): void {
     Process::fake();
 
-    $ready = Summary::factory()->create(['started_at' => Date::now()]);
+    $ready = Summary::factory()->create(['started_at' => Date::now(), 'claim' => (string) Str::ulid()]);
 
-    app(DraftIdeas::class)->execute($ready->id, $ready->started_at);
-    app(DraftIdeas::class)->execute(404, Date::now());
+    app(DraftIdeas::class)->execute($ready->id, (string) $ready->claim);
+    app(DraftIdeas::class)->execute(404, (string) Str::ulid());
 
     expect($ready->fresh()?->ideas)->toBeNull();
 
@@ -127,13 +130,13 @@ test('a step whose row is gone or finished does nothing', function (): void {
  */
 test('no step keys its own lock', function (): void {
     $summary = Summary::factory()->pending()->create();
-    $claimedAt = claimSummary($summary->id);
+    $claim = claimSummary($summary->id);
 
     foreach (summarisingSteps() as $step) {
         $action = app($step);
 
-        $first = new ActionJob($action, [$summary->id, $claimedAt]);
-        $second = new ActionJob($action, [$summary->id, $claimedAt]);
+        $first = new ActionJob($action, [$summary->id, $claim, $summary->video_id]);
+        $second = new ActionJob($action, [$summary->id, $claim, $summary->video_id]);
 
         expect($first->uniqueId())
             ->toStartWith($step.':')
@@ -149,8 +152,9 @@ test('a step that throws records the failure, so the page stops waiting', functi
     Log::spy();
 
     $summary = Summary::factory()->pending()->create();
+    $claim = claimSummary($summary->id);
 
-    app(ComposeSummary::class)->failed(new RuntimeException('the model refused'), $summary->id, Date::now());
+    app(ComposeSummary::class)->failed(new RuntimeException('the model refused'), $summary->id, $claim);
 
     $summary->refresh();
 
@@ -174,13 +178,16 @@ test('a step that throws records the failure, so the page stops waiting', functi
 test('a failure at the model keeps the transcript and the ideas for the retry', function (): void {
     Log::spy();
 
+    $claim = (string) Str::ulid();
+
     $summary = Summary::factory()->processing()->create([
+        'claim' => $claim,
         'transcript' => 'The words this attempt read.',
         'transcript_language' => 'en',
         'ideas' => 'What this attempt made of them.',
     ]);
 
-    app(ComposeSummary::class)->failed(new RuntimeException('the model refused'), $summary->id, Date::now());
+    app(ComposeSummary::class)->failed(new RuntimeException('the model refused'), $summary->id, $claim);
 
     $summary->refresh();
 
@@ -197,9 +204,11 @@ test('a failure at the model keeps the transcript and the ideas for the retry', 
 test('a failure does not overwrite a reason the row already had', function (): void {
     Log::spy();
 
-    $summary = Summary::factory()->failed()->create(['error' => SummaryError::TimedOut]);
+    $claim = (string) Str::ulid();
 
-    app(FetchCaptions::class)->failed(new RuntimeException('the model refused'), $summary->id, Date::now());
+    $summary = Summary::factory()->failed()->create(['error' => SummaryError::TimedOut, 'claim' => $claim]);
+
+    app(FetchCaptions::class)->failed(new RuntimeException('the model refused'), $summary->id, $claim);
 
     expect($summary->fresh()?->error)->toBe(SummaryError::TimedOut);
 
@@ -214,10 +223,12 @@ test('a failure does not overwrite a reason the row already had', function (): v
 test('a late failure does not throw away a summary that already finished', function (): void {
     Log::spy();
 
-    $summary = Summary::factory()->create();
+    $claim = (string) Str::ulid();
+
+    $summary = Summary::factory()->create(['claim' => $claim]);
     $outline = $summary->outline;
 
-    app(ComposeSummary::class)->failed(new RuntimeException('worker died after writing'), $summary->id, Date::now());
+    app(ComposeSummary::class)->failed(new RuntimeException('worker died after writing'), $summary->id, $claim);
 
     $summary->refresh();
 
@@ -225,4 +236,72 @@ test('a late failure does not throw away a summary that already finished', funct
         ->and($summary->outline)->toBe($outline);
 
     Log::shouldHaveReceived('error')->once();
+});
+
+/*
+ * The one that costs the most to get wrong.
+ *
+ * A step can throw ten minutes after it started - a model call is most of that - and by then the
+ * attempt it belongs to may have been written off and replaced. Writing the failure
+ * unconditionally would mark that live, half-paid-for attempt as failed, and its remaining steps
+ * would then find the row no longer pending and quietly do nothing: a summary nobody is going to
+ * get, with the model calls already paid for.
+ */
+test('a step from a replaced attempt does not fail the one that replaced it', function (): void {
+    Log::spy();
+
+    $summary = Summary::factory()->pending()->create();
+
+    /* The attempt that is live now. */
+    $live = claimSummary($summary->id);
+
+    /* A step of the attempt it replaced, arriving late and throwing. */
+    app(ComposeSummary::class)->failed(new RuntimeException('the model refused'), $summary->id, (string) Str::ulid());
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->error)->toBeNull()
+        ->and($summary->claim)->toBe($live);
+
+    /* Still logged, because a failure nobody recorded is the one worth being able to find. */
+    Log::shouldHaveReceived('error')->once();
+});
+
+/*
+ * The same window, reached from the other side. Giving up used to write through the model
+ * instance, which is an unqualified update by id: a step that spent four minutes in yt-dlp and
+ * then found no captions would write that verdict onto whatever attempt owned the row by then.
+ *
+ * Replaced while yt-dlp is being asked, which is the only moment this can happen in - after
+ * claimed() said yes and before giveUp() writes.
+ */
+test('a step from a replaced attempt does not give up on the one that replaced it', function (): void {
+    Log::spy();
+    fakeYouTube();
+
+    $summary = Summary::factory()->pending()->create();
+    $stale = claimSummary($summary->id);
+
+    Process::fake(function () use ($summary): FakeProcessResult {
+        Summary::query()->whereKey($summary->getKey())->update([
+            'started_at' => Date::now(),
+            'claim' => 'the-attempt-that-replaced-it',
+        ]);
+
+        /* No captions, so this step is about to give up on an attempt that is already over. */
+        return Process::result((string) json_encode([
+            'language' => 'en',
+            'subtitles' => [],
+            'automatic_captions' => [],
+        ]));
+    });
+
+    app(FetchCaptions::class)->execute($summary->id, $stale);
+
+    $summary->refresh();
+
+    expect($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->error)->toBeNull()
+        ->and($summary->claim)->toBe('the-attempt-that-replaced-it');
 });

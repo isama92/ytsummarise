@@ -8,7 +8,6 @@ use App\Models\Summary;
 use App\Services\Ai\Agents\CreateSummary;
 use App\Services\Ai\Data\SummaryOutline;
 use App\Services\Ai\Data\SummarySections;
-use Carbon\CarbonImmutable;
 use Laravel\Ai\Responses\StructuredAgentResponse;
 
 /**
@@ -28,11 +27,26 @@ use Laravel\Ai\Responses\StructuredAgentResponse;
  */
 class ComposeSummary extends SummarisingStep
 {
-    public function execute(int $summaryId, CarbonImmutable $claimedAt): void
+    public function execute(int $summaryId, string $claim): void
     {
-        $summary = $this->claimed($summaryId, $claimedAt);
+        $summary = $this->claimed($summaryId, $claim);
 
         if (! $summary instanceof Summary) {
+            return;
+        }
+
+        /*
+         * Already composed, so this is a redelivery rather than a first run: a worker can write
+         * the outline and then be killed before it deletes the job, and retry_after hands the same
+         * job to the next worker. Nothing else would notice - only TranslateOutline moves the row
+         * off pending - so without this the model is prompted a second time at full price. The two
+         * steps before this one skip on the same reasoning.
+         *
+         * Safe against a genuine retry rather than a redelivery, because the controller clears the
+         * outline when it resets a failed row: an outline on a pending row is always this
+         * attempt's.
+         */
+        if ($summary->outline !== null) {
             return;
         }
 
@@ -49,6 +63,6 @@ class ComposeSummary extends SummarisingStep
             SummarySections::parse($response->toArray()),
         );
 
-        $this->write($summaryId, $claimedAt, ['outline' => $outline->toArray()]);
+        $this->write($summaryId, $claim, ['outline' => $outline->toArray()]);
     }
 }

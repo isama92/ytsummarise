@@ -6,7 +6,7 @@ namespace App\Actions\Summarising;
 
 use App\Models\Summary;
 use App\Services\Ai\Agents\ExtractIdeas;
-use Carbon\CarbonImmutable;
+use UnexpectedValueException;
 
 /**
  * Step three: what the video actually says.
@@ -24,11 +24,17 @@ use Carbon\CarbonImmutable;
  */
 class DraftIdeas extends SummarisingStep
 {
-    public function execute(int $summaryId, CarbonImmutable $claimedAt): void
+    public function execute(int $summaryId, string $claim): void
     {
-        $summary = $this->claimed($summaryId, $claimedAt);
+        $summary = $this->claimed($summaryId, $claim);
 
-        if (! $summary instanceof Summary || $summary->ideas !== null) {
+        /*
+         * Blank rather than null, which is not pedantry. An empty string here would satisfy a
+         * null check for good: it would be stored, ComposeSummary would prompt a model with
+         * nothing and produce a summary about nothing, and every retry from then on would skip
+         * this pass and do it again. There is no way back from that without editing the row.
+         */
+        if (! $summary instanceof Summary || $summary->ideas !== null && $summary->ideas !== '') {
             return;
         }
 
@@ -40,10 +46,22 @@ class DraftIdeas extends SummarisingStep
          */
         assert($summary->transcript !== null);
 
-        $ideas = (new ExtractIdeas)
+        $ideas = trim((new ExtractIdeas)
             ->prompt($summary->transcript, timeout: config()->integer('summaries.model_timeout'))
-            ->text;
+            ->text);
 
-        $this->write($summaryId, $claimedAt, ['ideas' => $ideas]);
+        /*
+         * Thrown rather than stored, and rather than returned as an outcome. A model that answers
+         * with nothing is the feature being broken rather than something true about the video -
+         * which is the same line App\Services\Ai\Data\SummarySections::parse draws when a
+         * structured response comes back without a headline. Failing here marks the row, the page
+         * offers to try again, and the retry actually re-runs this pass; storing the empty answer
+         * would make it permanent instead.
+         */
+        if ($ideas === '') {
+            throw new UnexpectedValueException('The model returned no ideas to summarise.');
+        }
+
+        $this->write($summaryId, $claim, ['ideas' => $ideas]);
     }
 }
