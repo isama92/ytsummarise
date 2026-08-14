@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Jobs;
 
 use Illuminate\Contracts\Queue\ShouldBeUnique;
+use Illuminate\Queue\Middleware\SkipIfBatchCancelled;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use LogicException;
@@ -202,6 +203,59 @@ class ActionJob extends BaseActionJob implements ShouldBeUnique
     public function uniqueId(): string
     {
         return $this->uniqueKey;
+    }
+
+    /**
+     * Run the action, and hand it this job when it has somewhere to put it.
+     *
+     * The parent already passes the underlying queue job as $action->job. The addition is
+     * $action->actionJob, which is this class rather than the queue's, and is the only way an
+     * action can reach the batch it is running in - which is what a step of a chain needs in
+     * order to stop the steps queued behind it. See App\Actions\Summarising\SummarisingStep.
+     *
+     * property_exists rather than an interface, because the property is what the assignment
+     * needs and most actions have no use for it.
+     */
+    #[Override]
+    public function handle(): void
+    {
+        $action = app($this->actionClass);
+
+        assert(is_object($action));
+
+        if (property_exists($action, 'job')) {
+            $action->job = $this->job;
+        }
+
+        if (property_exists($action, 'actionJob')) {
+            $action->actionJob = $this;
+        }
+
+        $method = method_exists($action, 'queueMethod') ? $action->queueMethod() : 'execute';
+
+        assert(is_string($method));
+
+        $action->{$method}(...$this->parameters);
+    }
+
+    /**
+     * Middleware every action gets, whether it asks for one or not.
+     *
+     * SkipIfBatchCancelled is what makes cancelling a batch mean anything. A step that gives up
+     * cancels its own batch, but the steps behind it are already chained: cancelling does not
+     * unqueue them, it only marks the batch, and each one has to look before it runs.
+     *
+     * This does not replace an action's own middleware, which is worth knowing before reading
+     * either as the whole story: CallQueuedHandler::dispatchThroughMiddleware() merges what this
+     * method returns with the $middleware property, and the constructor fills that property from
+     * the action. Both apply.
+     *
+     * @return object[]
+     */
+    #[Override]
+    public function middleware(): array
+    {
+        return [new SkipIfBatchCancelled];
     }
 
     /**

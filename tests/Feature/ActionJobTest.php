@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Actions\SummariseVideo;
+use App\Actions\Summarising\DraftIdeas;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
@@ -237,7 +238,7 @@ test('the lock key survives being queued', function (): void {
          * only. They arrived MISSING here until this class declared them.
          */
         ->and($restored->tries)->toBe(1)
-        ->and($restored->timeout)->toBe(config()->integer('summaries.timeout'));
+        ->and($restored->timeout)->toBe(config()->integer('summaries.step_timeout'));
 });
 
 /*
@@ -289,8 +290,9 @@ test('a failure reaches the action with the row it was working on', function ():
     Log::spy();
 
     $summary = Summary::factory()->pending()->create();
+    $claimedAt = claimSummary($summary->id);
 
-    $job = new ActionJob(app(SummariseVideo::class), [$summary->id]);
+    $job = new ActionJob(app(DraftIdeas::class), [$summary->id, $claimedAt]);
 
     $job->failed(new RuntimeException('the model refused'));
 
@@ -306,8 +308,9 @@ test('a failure with no exception to report is still recorded', function (): voi
     Log::spy();
 
     $summary = Summary::factory()->pending()->create();
+    $claimedAt = claimSummary($summary->id);
 
-    (new ActionJob(app(SummariseVideo::class), [$summary->id]))->failed(null);
+    (new ActionJob(app(DraftIdeas::class), [$summary->id, $claimedAt]))->failed(null);
 
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Failed);
 });

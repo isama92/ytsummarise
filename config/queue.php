@@ -59,30 +59,32 @@ return [
 
         /*
          * Summarising has its own connection because retry_after is a property of the
-         * connection rather than of the job, and this job's timeout is half an hour.
+         * connection rather than of the job, and a step of one can take ten minutes.
          * Leaving it on `redis` would mean every future job - a webhook, an email -
-         * waiting half an hour to be picked up again after a worker died, to accommodate
+         * waiting that long to be picked up again after a worker died, to accommodate
          * one slow job. Its own queue name too, so a worker on one connection cannot
          * reserve the other's jobs off the shared Redis database.
          *
-         * retry_after has to stay above the job's timeout, or the worker reserves a job that
-         * is still running and one video is summarised twice at a model call each. Read
-         * through SummaryBudget rather than config('summaries.timeout') because a config
-         * file cannot call config() at all - the repository is only bound once every file
-         * has been read. A class it can reach; a config value it cannot.
+         * retry_after has to stay above the timeout of the longest single job, or the worker
+         * reserves one that is still running and a video is summarised twice at a model call
+         * each. The longest single job is a step of the chain rather than the whole attempt,
+         * which is why this reads stepSeconds(): measuring against the sum would leave a dead
+         * worker's job unreserved for the better part of an hour. Read through SummaryBudget
+         * rather than config('summaries.step_timeout') because a config file cannot call
+         * config() at all - the repository is only bound once every file has been read. A
+         * class it can reach; a config value it cannot.
          *
          * The minute on top is the margin, and config/horizon.php puts the supervisor's own
-         * timeout inside it. The order that matters is job < supervisor < this.
+         * timeout inside it. The order that matters is step < supervisor < this.
          */
         'summaries' => [
             'driver' => 'redis',
             'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
             'queue' => Queue::Summaries->value,
             'block_for' => null,
-            'retry_after' => SummaryBudget::seconds(
+            'retry_after' => SummaryBudget::stepSeconds(
                 env('SUMMARY_MODEL_TIMEOUT'),
                 env('SUMMARY_TRANSCRIPT_TIMEOUT'),
-                env('SUMMARY_TIMEOUT'),
             ) + 60,
             'after_commit' => false,
         ],
@@ -119,13 +121,21 @@ return [
     | Job Batching
     |--------------------------------------------------------------------------
     |
-    | Deliberately absent, along with the job_batches table it configured. Nothing here
-    | dispatches a batch, and the key only pointed at somewhere to record them.
+    | Summarising is one named batch holding a chain of five steps, which is what puts a
+    | video's progress on Horizon's Batches tab instead of leaving it as one job that is
+    | either running or not for the better part of an hour.
     |
-    | Putting it back is one entry and one migration, and the failure without it is loud
-    | rather than silent - `queue:prune-batches` and Bus::batch() both resolve it on use.
+    | In Postgres while the jobs themselves are in Redis, and that is the only shape on
+    | offer: this key names a database connection. It suits the job anyway. A batch's row
+    | outlives the jobs it counts, `queue:prune-batches` decides when it goes rather than
+    | an eviction policy, and a Redis flush leaves a finished batch legible.
     |
     */
+
+    'batching' => [
+        'database' => env('DB_CONNECTION', 'pgsql'),
+        'table' => 'job_batches',
+    ],
 
     /*
     |--------------------------------------------------------------------------

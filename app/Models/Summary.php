@@ -36,7 +36,7 @@ use Override;
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
  */
-#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'outline', 'error', 'requested_at', 'started_at'])]
+#[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'ideas', 'outline', 'error', 'requested_at', 'started_at'])]
 #[RouteKey('uuid')]
 class Summary extends Model
 {

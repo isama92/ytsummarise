@@ -15,13 +15,22 @@ namespace App\Support;
  *
  * The three that have to agree, and the order they have to hold in:
  *
- *     job timeout  <  supervisor timeout  <  connection retry_after
+ *     longest step  <  supervisor timeout  <  connection retry_after
  *      (config/summaries)   (config/horizon)     (config/queue)
  *
  * Out of order in either direction, the queue hands a still-running job to a second worker and
  * the same video is summarised twice, at a model call each. This was written out three times
  * before the class existed, with a test to notice when only one copy was changed; one function
  * removes the drift rather than detecting it.
+ *
+ * The step rather than the whole attempt, since summarising became a chain of five: no single
+ * job runs for the whole budget any more, so measuring retry_after against the sum would leave
+ * a worker that died holding a job for the better part of an hour before the queue took it back.
+ * Which leaves a second, looser ordering, measured from when a video was asked for rather than
+ * from when a worker picked a step up:
+ *
+ *     whole attempt  <=  stale_after
+ *      (seconds())        (config/summaries)
  *
  * Values are passed in rather than read here, and that is deliberate rather than ceremony.
  * env() outside the config directory returns null the moment the configuration is cached, so a
@@ -66,7 +75,27 @@ final class SummaryBudget
     }
 
     /**
-     * The whole job's budget: whichever is larger of what was asked for and what the steps
+     * The longest any one step of the chain may run.
+     *
+     * Summarising is five queued steps rather than one job, so this is what the worker enforces
+     * and what the supervisor and retry_after have to stay above. The whole attempt is still
+     * seconds() below, but nothing measures a single job against it any more.
+     *
+     * The worst step is whichever is larger of a pair of transcript calls - asking yt-dlp, then
+     * fetching the track it names, which happen in one step - and one model pass, which is what
+     * each of the three summarising steps costs. The minute on the end covers the reads and
+     * writes around whichever it turns out to be.
+     */
+    public static function stepSeconds(mixed $model, mixed $transcript): int
+    {
+        return max(
+            2 * self::transcriptSeconds($transcript),
+            self::modelSeconds($model),
+        ) + 60;
+    }
+
+    /**
+     * The whole attempt's budget: whichever is larger of what was asked for and what the steps
      * inside it are between them allowed to take.
      *
      * The worst case is one video: two transcript steps (asking yt-dlp, then fetching the track

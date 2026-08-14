@@ -22,6 +22,11 @@ $timeout = SummaryBudget::seconds(
     env('SUMMARY_TIMEOUT'),
 );
 
+$stepTimeout = SummaryBudget::stepSeconds(
+    env('SUMMARY_MODEL_TIMEOUT'),
+    env('SUMMARY_TRANSCRIPT_TIMEOUT'),
+);
+
 /*
  * Only a value that is unambiguously a number of days is believed, and everything else falls
  * back to the default rather than to zero.
@@ -80,6 +85,32 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Step Timeout
+    |--------------------------------------------------------------------------
+    |
+    | How long any one step of the chain gets, in seconds, and the only budget
+    | a worker actually enforces now that summarising is five queued steps
+    | rather than one job.
+    |
+    | Derived rather than set: the worst step is whichever is larger of a pair
+    | of transcript calls or a single model pass, so raising either raises this
+    | with it. There is no SUMMARY_STEP_TIMEOUT and there should not be - a
+    | value somebody could set below the step it has to cover is a worker that
+    | kills its own job mid-write.
+    |
+    | This is what config/horizon.php and config/queue.php are ordered against:
+    |
+    |   step timeout  <  supervisor timeout  <  retry_after
+    |
+    | The timeout above is the whole attempt, and nothing measures a single job
+    | against it any more - it is what stale_after has to clear.
+    |
+    */
+
+    'step_timeout' => $stepTimeout,
+
+    /*
+    |--------------------------------------------------------------------------
     | Stale After
     |--------------------------------------------------------------------------
     |
@@ -101,21 +132,26 @@ return [
     | stays rare: six hours is far longer than any real backlog, while still
     | being an answer rather than a spinner somebody watches all week.
     |
-    | Two different things happen when it is wrong, and only one of them is
-    | free. A job that has not started yet meets the status guard in
-    | SummariseVideo and stops, so nothing is paid for. A job already running is
-    | past that guard and finishes regardless - it writes its summary and the
-    | row goes ready, which is the right outcome, though a page that stopped
-    | polling on the failure needs a reload to see it. What that case does cost
-    | is the retry: resubmitting clears a claim a worker is still holding, and a
-    | second job can then pay for the same video.
+    | What it costs when it is wrong is the work already done, and no more than
+    | that. An attempt not yet started meets the status guard in SummariseVideo
+    | and never queues its batch, so nothing is paid for. An attempt part way
+    | through stops at the next step: every one of the five re-reads the status
+    | before doing anything, so the passes still to come are not paid for either.
     |
-    | Floored at twice the timeout, not at the timeout. The two clocks start at
-    | different moments - this one when the attempt was asked for, the worker's
-    | budget when the work began - so equal values expire the horizon while the
-    | work is still legally running for every row that waited in a queue at all.
-    | Doubling is the smallest floor that leaves room for both the work and some
-    | queueing.
+    | That is a change from when this was one job, and deliberate. Then, an
+    | attempt past the guard finished regardless and the row went ready, which
+    | was the right outcome because the model calls had been paid for as one
+    | unit anyway. Split into five, finishing regardless would mean paying for
+    | calls after the attempt was declared dead, so the steps stop instead. The
+    | transcript and the ideas are both kept, so asking again resumes rather
+    | than restarts.
+    |
+    | Floored at twice the whole attempt's budget, not at one step's. The two
+    | clocks start at different moments - this one when the attempt was asked
+    | for, a worker's budget when a step began - so equal values expire the
+    | horizon while the chain is still legally running for every row that waited
+    | in a queue at all. Doubling is the smallest floor that leaves room for both
+    | the work and some queueing.
     |
     */
 

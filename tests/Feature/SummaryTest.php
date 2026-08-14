@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Actions\SummariseVideo;
+use App\Actions\Summarising\FetchCaptions;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
@@ -334,8 +335,8 @@ test('a summary that failed holding a claim is really summarised when asked for 
     match ($route) {
         /* The command's write-off leaves the claim where it was: it only changes status. */
         'command' => $this->artisan('summaries:expire')->assertSuccessful(),
-        /* And the job failing on its own is the same shape reached from the other side. */
-        'job' => app(SummariseVideo::class)->failed(new RuntimeException('no transcript'), $summary->id),
+        /* And a step failing on its own is the same shape reached from the other side. */
+        'job' => app(FetchCaptions::class)->failed(new RuntimeException('no transcript'), $summary->id, $summary->started_at),
     };
 
     $summary->refresh();
@@ -349,9 +350,9 @@ test('a summary that failed holding a claim is really summarised when asked for 
         ->assertRedirect(route('summaries.show', $summary));
 
     /*
-     * Run by hand rather than inline. The job names its own connection, which overrides the
-     * sync default phpunit.xml sets, so dispatching it under test queues it rather than
-     * running it. What matters here is that handle() can claim the row it was given.
+     * Run by hand rather than inline. The steps name their own connection, which overrides
+     * the sync default phpunit.xml sets, so dispatching under test queues them rather than
+     * running them. What matters here is that the chain can claim the row it was given.
      */
     summariseVideo($summary->id);
 

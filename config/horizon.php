@@ -28,6 +28,16 @@ $summaryTimeout = SummaryBudget::seconds(
     env('SUMMARY_TIMEOUT'),
 );
 
+/*
+ * What one step of the summarising chain may take, which is what a worker enforces. The
+ * supervisor below is ordered against this rather than against the whole attempt, because no
+ * single job runs for the whole attempt any more.
+ */
+$summaryStepTimeout = SummaryBudget::stepSeconds(
+    env('SUMMARY_MODEL_TIMEOUT'),
+    env('SUMMARY_TRANSCRIPT_TIMEOUT'),
+);
+
 return [
 
     /*
@@ -299,7 +309,7 @@ return [
             'maxJobs' => 50,
             'memory' => 256,
             'tries' => 1,
-            'timeout' => $summaryTimeout + 30,
+            'timeout' => $summaryStepTimeout + 30,
             'nice' => 10,
         ],
     ],
