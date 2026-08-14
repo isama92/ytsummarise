@@ -11,6 +11,7 @@ use App\Services\YouTube\OembedConnector;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Spatie\QueueableAction\QueueableAction;
+use Tests\Support\ActionWithBrokenFailureHandler;
 use Tests\Support\SubclassedActionJob;
 use Tests\Support\UnkeyedAction;
 
@@ -309,6 +310,74 @@ test('a failure with no exception to report is still recorded', function (): voi
     (new ActionJob(app(SummariseVideo::class), [$summary->id]))->failed(null);
 
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Failed);
+});
+
+/*
+ * The handler that fails while handling a failure.
+ *
+ * Job::fail() wraps this call in try/finally with no catch, and it is already dealing with an
+ * exception by the time it gets here. A throw would escape into Worker::handleJobException, the
+ * row would never be written off, and the page would wait for an answer nobody is going to send
+ * until summaries:expire gives up hours later.
+ */
+test('a failure handler that throws does not take the job down with it', function (): void {
+    Log::spy();
+
+    $job = new ActionJob(new ActionWithBrokenFailureHandler);
+
+    expect(fn () => $job->failed(new RuntimeException('the original failure')))
+        ->not->toThrow(Throwable::class);
+
+    Log::shouldHaveReceived('error')
+        ->once()
+        ->withArgs(fn (string $message, array $context): bool => $message === 'A failed job could not record its own failure'
+            && $context['action'] === ActionWithBrokenFailureHandler::class
+            /* Both exceptions, because either one alone explains half of it. */
+            && $context['failure'] === 'the original failure'
+            && $context['unrecorded_because'] === 'the failure handler is broken too');
+});
+
+/*
+ * The same when the action cannot be built at all, which is the likelier of the two: resolving one
+ * builds everything its constructor asks for, and for SummariseVideo that is two Saloon connectors
+ * and a summariser, none of which has anything to do with marking a row.
+ */
+test('an action that cannot be built does not take the job down either', function (): void {
+    Log::spy();
+
+    $summary = Summary::factory()->pending()->create();
+
+    /* Built while the container still can, the way a dispatch would. */
+    $job = new ActionJob(app(SummariseVideo::class), [$summary->id]);
+
+    app()->bind(SummariseVideo::class, function (): never {
+        throw new RuntimeException('config is missing on this deploy');
+    });
+
+    expect(fn () => $job->failed(new RuntimeException('the original failure')))
+        ->not->toThrow(Throwable::class);
+
+    Log::shouldHaveReceived('error')
+        ->once()
+        ->withArgs(fn (string $message, array $context): bool => $message === 'A failed job could not record its own failure'
+            /* The id is what says which row went unmarked. */
+            && $context['parameters'] === [$summary->id]);
+});
+
+/*
+ * And a parameter that is not a scalar is described rather than dumped. A model here would put a
+ * whole row in the log, and a transcript is other people's words.
+ */
+test('the log line names the type of anything that is not a scalar', function (): void {
+    Log::spy();
+
+    $job = new ActionJob(new ActionWithBrokenFailureHandler, [new Summary, 7]);
+
+    $job->failed(null);
+
+    Log::shouldHaveReceived('error')
+        ->once()
+        ->withArgs(fn (string $message, array $context): bool => $context['parameters'] === [Summary::class, 7]);
 });
 
 /*

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Jobs;
 
 use Illuminate\Contracts\Queue\ShouldBeUnique;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use LogicException;
 use Override;
@@ -213,14 +214,47 @@ class ActionJob extends BaseActionJob implements ShouldBeUnique
      *
      * Nullable where the parent is not: Laravel calls this with null when a payload cannot be
      * unserialised at all, and widening a parameter is the one direction an override may go.
+     *
+     * Nothing is allowed out of here, which is the one thing this method owes the rest of the
+     * system. Resolving the action builds everything its constructor asks for - for one of these
+     * that is two Saloon connectors and a summariser, none of which has anything to do with
+     * marking a row - and any of them can throw on a bad deploy. Illuminate\Queue\Jobs\Job::fail()
+     * wraps this call in try/finally with no catch, so a throw here escapes into
+     * Worker::handleJobException, which is already handling an exception: the row is never
+     * written off, the page waits for an answer that is not coming until summaries:expire gives
+     * up on it hours later, and the worker process can go down with it.
+     *
+     * So a failure to record a failure becomes a log line. That is a real loss - a genuine bug in
+     * an action's failed() is now quiet - which is why the line says plainly what happened and
+     * carries both exceptions. The job is still recorded in failed_jobs either way, because the
+     * JobFailed event is dispatched from that finally.
      */
     #[Override]
     public function failed(?Throwable $exception): void
     {
-        $action = app($this->actionClass);
+        try {
+            $action = app($this->actionClass);
 
-        if (is_object($action) && method_exists($action, 'failed')) {
-            $action->failed($exception, ...$this->parameters);
+            if (is_object($action) && method_exists($action, 'failed')) {
+                $action->failed($exception, ...$this->parameters);
+            }
+        } catch (Throwable $unrecorded) {
+            Log::error('A failed job could not record its own failure', [
+                'action' => $this->actionClass,
+
+                /*
+                 * Scalars as they are and everything else as its type. What is worth having here
+                 * is which piece of work this was, which for every action so far is an id; a
+                 * parameter that is a model would otherwise put a whole row in the log, and
+                 * transcripts are other people's words.
+                 */
+                'parameters' => array_map(
+                    fn (mixed $parameter): mixed => is_scalar($parameter) ? $parameter : get_debug_type($parameter),
+                    $this->parameters,
+                ),
+                'failure' => $exception?->getMessage(),
+                'unrecorded_because' => $unrecorded->getMessage(),
+            ]);
         }
     }
 
