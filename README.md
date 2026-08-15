@@ -240,36 +240,43 @@ The image runs unprivileged as **1000:1000**, and `compose.yml` reads `PUID` and
 from the `.env` beside it:
 
 ```sh
+PUID=1000
 PGID=100
 ```
 
-**The uid owns everything writable, and the gid is free.** `1000:100`, `1000:1000`,
-anything — set `PGID` to whatever your host wants and nothing else has to change. The
-image chowns every path the application writes to, so the owner bits decide and the group
-is never consulted. There is deliberately no group-writable fallback: it would cover the
+**One rule sits behind both: the storage volume has to be owned by `PUID`.** Nothing else
+in the image has to agree with anything, because every runtime write lands in
+`/app/storage` — the Dockerfile points Laravel's config, route and event caches there
+instead of `bootstrap/cache`, and Caddy's autosaved config there instead of the
+root-owned `/data`. Owning one directory is the whole of it.
+
+`PGID` is freer still and needs not even that. Every writable path belongs to the uid, so
+the owner bits decide and the group is never consulted — `1000:100` and `1000:1000` are
+equally fine. There is deliberately no group-writable fallback: it would cover the
 directories but not the cover images, which are written `0600`, and a rule with an
 exception is worse than one without.
 
-`PUID` is the half that is not free, because a storage volume that already exists still
-belongs to whoever created it. Nothing in an image can change that, so the entrypoint
-tests for it and stops with the chown command rather than letting it become a puzzle.
+A fresh stack at the default needs nothing done. An empty named volume takes the image's
+ownership at first mount, so it already belongs to 1000.
 
 That is docker's own `user:` key rather than the root-then-drop entrypoint linuxserver.io
 images use, and the difference is not cosmetic. Dropping privileges with `su-exec` needs
 `CAP_SETUID` and `CAP_SETGID`, and every service in this stack runs with `cap_drop: ALL`;
-`user:` is applied by the kernel at exec and costs no capability and no root phase. It
-also covers all three containers, which an entrypoint could not — `horizon` and
-`scheduler` set their own `entrypoint:` and never run `app-entrypoint.sh`.
+`user:` is applied by the kernel at exec and costs no capability and no root phase. All
+three containers run `docker/preflight.sh` before anything else, including the two that
+set their own `entrypoint:` — `depends_on` orders `docker compose up`, but a host reboot
+restarts everything at once, and a worker that cannot write covers loses them silently.
 
 1000 rather than the base image's `www-data`, which is 82:82 on Alpine and corresponds to
 nothing on a host. Being able to hand the container a directory your own user already
-owns is the whole point of the move.
+owns is the point of the move.
 
-#### Upgrading from an older image
+#### When a chown is needed
 
-**Read this before pulling.** Every version before this one ran as `82:82`, and a
-`storage` volume created then still says so. The new container cannot write to it, and it
-will refuse to start until you fix that:
+Three cases: a `PUID` other than the one that created the volume, a bind mount (which
+inherits nothing, ever), and **upgrading from an image older than this one** — those ran
+as `82:82`, so an existing volume still belongs to www-data. Every container refuses to
+start until it is fixed, and prints this:
 
 ```sh
 docker compose down
@@ -278,24 +285,18 @@ docker run --rm -v <name>_storage:/s alpine chown -R 1000:1000 /s
 docker compose pull && docker compose up -d
 ```
 
-Use `$PUID` in place of `1000` if you set one. A bind mount is chowned on the host
-instead. A fresh stack needs none of this — an empty named volume takes the image's
-ownership at first mount.
+Use your own `PUID:PGID` in place of `1000:1000`. For a bind mount it is just
+`sudo chown -R 1000:1000 ./storage` on the host, before the first `up`.
 
-Skip it and the failure is loud but not where you would look: the entrypoint runs
-`view:cache` long before frankenphp listens, so the **web** container restart-loops, `/up`
-never answers, and `horizon` and `scheduler` stay blocked on `depends_on:
-service_healthy`. The whole stack stays down, and the guard exists so the logs say why.
+Skipping it fails loudly but not where you would look: the guard runs before frankenphp
+listens, so the **web** container restart-loops and `/up` never answers. That is the point
+of it — unguarded, the first symptom was `view:cache` throwing on a Blade template.
 
 #### A different uid
 
-Rebuild rather than override, so the image and the volume agree from the start:
-
-```sh
-docker build --target prod --build-arg UID=1500 -t ytsummarise .
-```
-
-`--build-arg GID=` exists too, but it only sets the default that `PGID` overrides anyway.
+Nothing to build. Set `PUID` to whatever your host user is, chown the volume to match, and
+the image runs as that. `--build-arg UID=` exists for a fork that wants a different
+default baked in, but no deployment needs it.
 
 ## Test coverage
 

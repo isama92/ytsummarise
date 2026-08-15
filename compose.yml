@@ -81,19 +81,21 @@ services:
       - "traefik.http.services.ytsummarise.loadbalancer.server.port=8080"
 
     # Which uid:gid every process in this container runs as. Put PUID and PGID in the .env
-    # beside this file and compose interpolates them here; unset, the image's own
-    # 1000:1000 applies.
+    # beside this file and compose interpolates them here; unset, 1000:1000 applies.
     #
-    # The two are not equally free, and the difference is the only thing to understand:
+    # Both are free, and there is exactly one rule behind them: the storage volume has to
+    # be owned by PUID. Nothing else in the image has to agree with anything - the
+    # Dockerfile redirects Laravel's bootstrap caches and Caddy's own state into
+    # /app/storage so that owning that one directory is the whole of it. PGID is freer
+    # still and needs not even that, because every writable path is owned by the uid and
+    # the group is never consulted.
     #
-    #   PGID is free. Set it to 100, to 1000, to anything. The image owns every writable
-    #   path as its uid, so the owner bits decide and the group is never consulted.
-    #   Nothing to chown, nothing to rebuild.
-    #
-    #   PUID is not, unless the storage volume agrees with it. An empty named volume takes
-    #   the image's ownership at first mount and keeps it forever, and a bind mount never
-    #   takes it at all - so a moved uid meets a directory belonging to somebody else. The
-    #   entrypoint checks for exactly this and prints the chown; see the note on volumes.
+    # A fresh stack needs nothing done: an empty named volume takes the image's ownership
+    # at first mount, so PUID=1000 (the default) simply works. Any other value, or a bind
+    # mount, or a volume from an older image, wants a chown first - the README section
+    # "Which user it runs as" is the one copy of that procedure, and every container here
+    # runs docker/preflight.sh, which stops with the exact command rather than letting a
+    # cache write fail somewhere further in.
     #
     # This is docker's own `user:` key and NOT the PUID/PGID entrypoint that
     # linuxserver.io images (radarr, sonarr) use, which is a deliberate choice rather than
@@ -110,40 +112,30 @@ services:
     user: &app_user "${PUID:-1000}:${PGID:-1000}"
 
     volumes:
-      # Only really needed for storage/app, which is where video cover images are
-      # written: one jpeg per summary, fetched once by the summarising chain and served
-      # from here on every page view. Logs go to stdout and the cache, session and queue
-      # drivers are all Redis, so the framework writes very little else.
+      # Everything this application writes, and the only thing PUID has to agree with.
+      # Cover images are the visible part - one jpeg per summary, written by a worker,
+      # read by the web container and deleted by summaries:prune, which is what the same
+      # volume in all three services is for. The rest is quieter than it looks: logs go to
+      # stdout, cache and sessions and the queue are all Redis, and the framework's own
+      # scratch is small. Two things are here that would not be by default, both moved by
+      # the Dockerfile so that owning this one directory is sufficient - Laravel's config,
+      # route and event caches, otherwise /app/bootstrap/cache, and Caddy's autosaved
+      # config, otherwise the root-owned /data and /config.
       #
-      # The same volume is mounted in horizon and scheduler below, which is what makes
-      # this work: a cover is written by a worker and read by the web container, and
-      # summaries:prune deletes it from a third.
+      # An empty named volume takes its ownership from the image ONCE, at first mount, and
+      # never again. So a fresh stack at the default PUID=1000 needs nothing done to it,
+      # and changing PGID later needs nothing either.
       #
-      # An empty named volume takes its ownership from the image ONCE, the first time it
-      # is mounted, and never again. A fresh stack therefore needs no chown at all, and
-      # changing PGID afterwards needs none either - the uid still owns everything.
-      #
-      # Changing PUID does, and so does UPGRADING FROM AN IMAGE OLDER THAN THIS ONE: the
-      # container used to run as the base image's www-data, 82:82, and a volume created
-      # then still says so. The entrypoint refuses to start rather than half-work, and
-      # prints this:
-      #
-      #   docker compose down
-      #   docker volume ls                       # find the real name, prefixed by the
-      #                                          # directory this file sits in
-      #   docker run --rm -v <name>_storage:/s alpine chown -R 1000:1000 /s
-      #   docker compose up -d
-      #
-      # Swapping this for a bind mount (`- ./storage:/app/storage`) inherits nothing at
-      # all: the host directory keeps whatever it already was, so `chown -R 1000:1000` it
-      # before the first `up`. Being able to do that - to hand the container a directory
-      # the host user already owns - is the entire reason the image moved off 82:82, which
-      # is an Alpine id that corresponds to nothing on a host.
+      # A chown IS needed for a different PUID, for a bind mount, and when UPGRADING FROM
+      # AN IMAGE OLDER THAN THIS ONE - those ran as the base image's www-data, 82:82, and
+      # a volume created then still says so. docker/preflight.sh stops every container
+      # here with the exact command rather than letting it surface later and elsewhere;
+      # the README section "Which user it runs as" is the one written copy.
       - storage:/app/storage
 
-    # The image runs unprivileged on a port above 1024, so it needs no
-    # Linux capabilities at all. Not read_only: the entrypoint writes the config,
-    # route, view and event caches into bootstrap/cache on every start.
+    # The image runs unprivileged on a port above 1024, so it needs no Linux capabilities
+    # at all. Not read_only either: the entrypoint builds the config, route, view and
+    # event caches on every start, into the storage volume.
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
@@ -252,7 +244,15 @@ services:
     #
     # No flags: what --max-time and --tries used to say here now lives in config/horizon.php,
     # per supervisor, where the dashboard can also show it.
-    entrypoint: ["php", "artisan", "horizon"]
+    #
+    # The preflight runs first because this container writes the cover images, and it is
+    # the one place `depends_on` below does not actually protect: that ordering applies to
+    # `docker compose up`, not to a host reboot, where the daemon restarts all three
+    # independently. Horizon needs nothing but Redis to start working, so without this it
+    # would drain the queue against a storage tree it cannot write to and lose every cover
+    # silently - the video-covers disk is `throw => false`. exec so that Horizon, not the
+    # shell, is pid 1 and receives the SIGTERM that stop_grace_period below is about.
+    entrypoint: ["sh", "-c", "app-preflight.sh && exec php artisan horizon"]
 
     # Must match the web container's: this is the service that WRITES the cover images the
     # other two read and delete. A mismatch here is the one that actually bites, and it
@@ -313,10 +313,10 @@ services:
     env_file: .env
     environment: *worker_environment
 
-    entrypoint: ["php", "artisan", "schedule:work"]
+    # summaries:prune unlinks cover images, so this one writes to the volume too and gets
+    # the same preflight, for the same reboot reason as horizon.
+    entrypoint: ["sh", "-c", "app-preflight.sh && exec php artisan schedule:work"]
 
-    # summaries:prune unlinks cover images, so this one needs write access to the same
-    # volume as the other two.
     user: *app_user
 
     networks:
