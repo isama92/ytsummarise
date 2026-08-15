@@ -47,6 +47,26 @@ return [
             'report' => false,
         ],
 
+        /*
+         * Video cover images, one per summary, named for the row's uuid; see
+         * App\Models\Summary::fileName().
+         *
+         * Deliberately not 'public' and deliberately without 'serve' or a 'url'. Either would
+         * put the files on an unauthenticated path, and this application has no such page: the
+         * only way to one is summaries.cover, which sits inside the same auth group as the
+         * summary the image belongs to. Nothing is added to 'links' below for the same reason.
+         *
+         * throw and report are false to match the other two disks, so a file that is not there
+         * is an answer rather than an exception. Everything that reads this disk checks first
+         * and has something to do when there is nothing to read.
+         */
+        'video-covers' => [
+            'driver' => 'local',
+            'root' => storage_path('app/video-covers'),
+            'throw' => false,
+            'report' => false,
+        ],
+
     ],
 
     /*

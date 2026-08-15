@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use App\Console\Commands\ExpireStalledSummaries;
+use App\Console\Commands\ExpireStalledSummariesCommand;
 use App\Enums\SummaryError;
 use App\Enums\SummaryStatus;
 use App\Models\Summary;
@@ -250,7 +250,7 @@ test('the command is scheduled hourly', function (): void {
 });
 
 test('the command has a signature that matches what is scheduled', function (): void {
-    expect((new ExpireStalledSummaries)->getName())->toBe('summaries:expire');
+    expect((new ExpireStalledSummariesCommand)->getName())->toBe('summaries:expire');
 });
 
 /*

@@ -284,10 +284,12 @@ test('a step from a replaced attempt does not give up on the one that replaced i
     $stale = claimSummary($summary->id);
 
     Process::fake(function () use ($summary): FakeProcessResult {
-        Summary::query()->whereKey($summary->getKey())->update([
-            'started_at' => Date::now(),
-            'claim' => 'the-attempt-that-replaced-it',
-        ]);
+        Summary::query()
+            ->whereKey($summary->getKey())
+            ->update([
+                'started_at' => Date::now(),
+                'claim' => 'the-attempt-that-replaced-it',
+            ]);
 
         /* No captions, so this step is about to give up on an attempt that is already over. */
         return Process::result((string) json_encode([

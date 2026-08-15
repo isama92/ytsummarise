@@ -11,6 +11,14 @@
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
+        <!--
+            Registered so the arch rules run on every `php artisan test` and in ci:check.
+            Without a testsuite of its own the directory is only reached by naming it on the
+            command line, which means a rule can be broken for weeks and nothing says so.
+        -->
+        <testsuite name="Architecture">
+            <directory>tests/Architecture</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>

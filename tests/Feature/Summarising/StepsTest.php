@@ -12,8 +12,11 @@ use App\Models\Summary;
 use App\Services\Ai\Agents\CreateSummary;
 use App\Services\Ai\Agents\ExtractIdeas;
 use App\Services\Ai\Agents\TranslateSummary;
+use App\Services\YouTube\Actions\FetchCover;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Ai\Prompts\AgentPrompt;
 
 /*
@@ -55,6 +58,67 @@ test('finding the video writes the title and nothing else', function (): void {
         ->and($summary->status)->toBe(SummaryStatus::Pending)
         ->and($summary->transcript)->toBeNull()
         ->and($summary->outline)->toBeNull();
+});
+
+test('finding the video fetches its cover image', function (): void {
+    fakeYouTube();
+
+    [$summary, $claim] = claimedSummary();
+
+    app(FindVideo::class)->execute($summary->id, $claim);
+
+    /*
+     * Fetched by this step rather than by a later one, for the same reason the title is written
+     * here: it is a fact about the video, and this is the step that has just established there
+     * is one. It is also the step nothing has paid for yet.
+     */
+    Storage::disk(FetchCover::DISK)->assertExists($summary->file_name);
+});
+
+/*
+ * The redelivery guard, which is about a worker dying rather than about a retry.
+ *
+ * A worker can finish a step and be killed before it deletes the job, and retry_after then hands
+ * the same job to somebody else. Nothing on the row says so, because only the last step of the
+ * chain moves it off pending, so each step has to recognise its own work; here the work is a
+ * file, so the file is what is tested.
+ */
+test('finding the video leaves a cover that is already there alone', function (): void {
+    fakeYouTube();
+
+    [$summary, $claim] = claimedSummary();
+
+    Storage::disk(FetchCover::DISK)->put($summary->file_name, 'the bytes from the run before');
+
+    app(FindVideo::class)->execute($summary->id, $claim);
+
+    Http::assertNothingSent();
+
+    expect(Storage::disk(FetchCover::DISK)->get($summary->file_name))
+        ->toBe('the bytes from the run before');
+});
+
+/*
+ * The only best effort thing in the chain, and deliberately so.
+ *
+ * A cover is decoration beside a summary somebody is waiting for. Writing the attempt off over a
+ * thumbnail would cancel the batch before the transcript had even been fetched, which is trading
+ * the whole answer for a picture.
+ */
+test('a cover that cannot be fetched does not stop the step', function (): void {
+    fakeYouTube('Never Gonna Give You Up', coverSize: null);
+
+    [$summary, $claim] = claimedSummary();
+
+    app(FindVideo::class)->execute($summary->id, $claim);
+
+    $summary->refresh();
+
+    expect($summary->title)->toBe('Never Gonna Give You Up')
+        ->and($summary->status)->toBe(SummaryStatus::Pending)
+        ->and($summary->error)->toBeNull();
+
+    Storage::disk(FetchCover::DISK)->assertMissing($summary->file_name);
 });
 
 test('fetching the captions writes the transcript and its language together', function (): void {

@@ -28,7 +28,7 @@ use Illuminate\Support\Facades\Log;
  */
 #[Signature('summaries:expire')]
 #[Description('Fail summaries that have been pending too long')]
-class ExpireStalledSummaries extends Command
+class ExpireStalledSummariesCommand extends Command
 {
     /**
      * How many video ids a single log entry will carry.

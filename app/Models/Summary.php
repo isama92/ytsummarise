@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\RouteKey;
 use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -37,6 +38,7 @@ use Override;
  * @property CarbonImmutable $requested_at
  * @property CarbonImmutable|null $started_at
  * @property string|null $claim
+ * @property-read string $file_name
  */
 #[Fillable(['video_id', 'status', 'title', 'transcript', 'transcript_language', 'ideas', 'outline', 'error', 'requested_at', 'started_at', 'claim'])]
 #[RouteKey('uuid')]
@@ -99,6 +101,35 @@ class Summary extends Model
             'requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
         ];
+    }
+
+    /**
+     * What this row's cover image is called on the video-covers disk.
+     *
+     * Named for the row rather than for the video, and both halves of that are deliberate.
+     * The uuid is already the public handle for a summary, so the file needs no second
+     * mapping to be found from a url; and a row about to be deleted still knows its own
+     * file name, which is what lets summaries:prune take the image with it. Naming it for
+     * the video code would leave a pruned file identifiable only by re-deriving it from a
+     * row that is gone.
+     *
+     * .jpg because that is what YouTube serves. Nothing here re-encodes: the bytes are
+     * written exactly as they arrived, so the extension describes the file rather than
+     * an intention.
+     *
+     * Read as either $summary->fileName or $summary->file_name; Str::camel() resolves both
+     * to this method.
+     *
+     * non-falsy-string rather than string, because Attribute's TGet is invariant and the
+     * value is one: an interpolation ending in a literal extension cannot be empty, and
+     * declaring the wider type is an error rather than a generalisation. The @property-read
+     * on the class is what callers read, and string is right there.
+     *
+     * @return Attribute<non-falsy-string, never>
+     */
+    protected function fileName(): Attribute
+    {
+        return Attribute::get(fn (): string => "{$this->uuid}.jpg");
     }
 
     /**

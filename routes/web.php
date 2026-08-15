@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Auth\AuthenticationController;
 use App\Http\Controllers\Auth\FirstUserController;
+use App\Http\Controllers\Auth\OidcCallbackController;
+use App\Http\Controllers\Auth\OidcRedirectController;
 use App\Http\Controllers\ManifestController;
 use App\Http\Controllers\SummaryController;
+use App\Http\Controllers\SummaryCoverController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -33,6 +36,16 @@ Route::middleware('auth')->group(function (): void {
     Route::get('summaries/{summary}', [SummaryController::class, 'show'])->name('summaries.show');
 
     /*
+     * The video's cover image, kept on a disk with no url of its own so that this is the
+     * only way to one; see config/filesystems.php. Inside the auth group because the image
+     * says which video somebody summarised just as plainly as the summary does, and a page
+     * behind a sign-in whose pictures are not is not behind a sign-in.
+     *
+     * Not throttled, for the same reason the route above is not: the page asks for it.
+     */
+    Route::get('summaries/{summary}/cover', SummaryCoverController::class)->name('summaries.cover');
+
+    /*
      * Throttled even though it sits behind authentication: it queues work that will be a
      * paid model call, so an accidental loop in the frontend should cost a 429 rather
      * than a bill. Signed in people do not submit videos thirty times a minute.
@@ -56,8 +69,8 @@ Route::middleware('guest')->group(function (): void {
     Route::middleware('throttle:30,1')->group(function (): void {
         Route::get('login', [AuthenticationController::class, 'create'])->name('login');
 
-        Route::get('auth/redirect', [AuthenticationController::class, 'redirect'])->name('auth.redirect');
-        Route::get('auth/callback', [AuthenticationController::class, 'callback'])->name('auth.callback');
+        Route::get('auth/redirect', OidcRedirectController::class)->name('auth.redirect');
+        Route::get('auth/callback', OidcCallbackController::class)->name('auth.callback');
 
         /*
          * Only reachable while AUTH_ENABLED is false and no user exists; the controller

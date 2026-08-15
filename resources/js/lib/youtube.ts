@@ -41,6 +41,19 @@ const NOT_IDS = ['videoseries', 'live_stream'];
  * uses is good enough, and being strict here only ever rejects something that would have
  * worked: youtube.com, m.youtube.com, youtube-nocookie.com and youtu.be are all real.
  */
+/**
+ * The canonical watch url for an id.
+ *
+ * Built rather than stored. The id is the only part that varies, so a column holding one
+ * of these would be the same eleven characters with thirty fixed ones in front of them,
+ * and a link that could go stale against a row nobody would think to migrate.
+ *
+ * The short host without a www, which is what YouTube itself redirects to.
+ */
+export function watchUrl(videoId: string): string {
+    return `https://youtube.com/watch?v=${videoId}`;
+}
+
 export function extractVideoId(input: string): string | null {
     const trimmed = input.trim();
 

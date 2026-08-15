@@ -8,8 +8,10 @@ use App\Actions\SummariseVideo;
 use App\Enums\SummaryStatus;
 use App\Http\Requests\SummaryRequest;
 use App\Models\Summary;
+use App\Services\YouTube\Actions\FetchCover;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -181,6 +183,24 @@ class SummaryController extends Controller
                  * queue and being worked on. The page says which; the wording lives there.
                  */
                 'startedAt' => $summary->started_at?->toIso8601String(),
+
+                /*
+                 * Where the video's cover image is, or null when there is not one to show:
+                 * an older row nothing has backfilled, a video whose thumbnail could not be
+                 * fetched, or an attempt that has not got past step one yet.
+                 *
+                 * Asked of the disk rather than assumed from the status, because none of the
+                 * three cases above is visible in a column and a url handed over for a file
+                 * that is not there is a broken image on the page. A local stat is cheap
+                 * enough for the two second poll.
+                 *
+                 * A resolved url rather than a flag the page turns into one, which would mean
+                 * sending the uuid as a prop of its own for no other purpose than to rebuild
+                 * what the server already knows.
+                 */
+                'coverUrl' => Storage::disk(FetchCover::DISK)->exists($summary->file_name)
+                    ? route('summaries.cover', $summary)
+                    : null,
             ] : null,
         ]);
     }

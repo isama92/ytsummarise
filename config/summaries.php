@@ -212,6 +212,32 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Cover
+    |--------------------------------------------------------------------------
+    |
+    | How long one attempt at a video's cover image gets, in seconds. Up to
+    | three of them run for a video, because YouTube publishes a thumbnail at
+    | several sizes and only the smallest is guaranteed to exist; see
+    | App\Services\YouTube\Actions\FetchCover.
+    |
+    | Not derived and not floored against anything, unlike every other budget in
+    | this file, because nothing depends on it being met. A cover that does not
+    | arrive is a page without a picture, so the worst this can do is spend some
+    | of step one's budget - and even three of these fit inside it with room to
+    | spare, since that budget is sized for a model pass.
+    |
+    | Small on purpose. This is an image off a CDN: a request anywhere near
+    | fifteen seconds is one that is not coming, and waiting longer for it only
+    | delays the summary somebody is actually waiting for.
+    |
+    */
+
+    'cover' => [
+        'timeout' => (int) env('SUMMARY_COVER_TIMEOUT', 15),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Retention
     |--------------------------------------------------------------------------
     |

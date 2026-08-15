@@ -106,6 +106,38 @@ function summariseVideo(int $summaryId, ?string $claim = null): void
 }
 
 /**
+ * The bytes a faked cover image answers with.
+ *
+ * A real jpeg, if a very short one: the start of image marker, a JFIF header and the end of
+ * image marker, which is what `file` reads to call something a JPEG. Nothing under test looks
+ * inside an image, but a fixture that is honestly shaped costs nothing and means a test that
+ * writes one to disk has written something openable.
+ */
+const COVER_BYTES = "\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9";
+
+/**
+ * A YouTube that has a cover image, or does not have one at any size.
+ *
+ * Illuminate's http client rather than Saloon, because that is what FetchCover uses; see
+ * .ai/rules/services.md for why the two fakes cannot see each other's requests.
+ *
+ * The size is which rung of the ladder answers. maxresdefault by default, so a test about
+ * something else spends one request rather than three, and null for a video that has no
+ * thumbnail at all. Which rung answered is FetchCoverTest's business and it arranges its own.
+ *
+ * The specific stub is registered before the catch-all, and that order is what makes this work:
+ * Http::fake accumulates stubs and the first pattern that matches a url wins.
+ */
+function fakeCover(?string $size = 'maxresdefault'): void
+{
+    if ($size !== null) {
+        Http::fake(["i.ytimg.com/vi/*/{$size}.jpg" => Http::response(COVER_BYTES)]);
+    }
+
+    Http::fake(['i.ytimg.com/*' => Http::response(status: 404)]);
+}
+
+/**
  * A YouTube that answers, for the tests that are about something else.
  *
  * Only the keyless endpoint, because a title is the whole answer and the lookup asks nothing
@@ -115,12 +147,19 @@ function summariseVideo(int $summaryId, ?string $claim = null): void
  * Keyed by request class rather than by url, which is how Saloon's fakes work. The plugin
  * destroys the global mock client when the application boots, so each test starts clean without
  * any teardown here.
+ *
+ * The cover is faked here as well, because FindVideo fetches one immediately after the lookup
+ * and the suite forbids a stray request. A test wanting the no-cover path passes
+ * `coverSize: null` rather than calling fakeCover() afterwards: stubs accumulate in the order
+ * they are registered and the first match wins, so a later call could not take this one back.
  */
-function fakeYouTube(string $title = 'Never Gonna Give You Up'): void
+function fakeYouTube(string $title = 'Never Gonna Give You Up', ?string $coverSize = 'maxresdefault'): void
 {
     Saloon::fake([
         OembedRequest::class => MockResponse::make(['title' => $title]),
     ]);
+
+    fakeCover($coverSize);
 }
 
 /**

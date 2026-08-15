@@ -81,10 +81,15 @@ services:
       - "traefik.http.services.ytsummarise.loadbalancer.server.port=8080"
 
     volumes:
-      # Only really needed for storage/app (user uploads). Logs go to stdout and the
-      # cache, session and queue drivers are all Redis, so the framework writes very
-      # little here. The volume inherits www-data ownership from the image on first
-      # mount, so there is no chown to do by hand.
+      # Only really needed for storage/app, which is where video cover images are
+      # written: one jpeg per summary, fetched once by the summarising chain and served
+      # from here on every page view. Logs go to stdout and the cache, session and queue
+      # drivers are all Redis, so the framework writes very little else.
+      #
+      # The same volume is mounted in horizon and scheduler below, which is what makes
+      # this work: a cover is written by a worker and read by the web container, and
+      # summaries:prune deletes it from a third. The volume inherits www-data ownership
+      # from the image on first mount, so there is no chown to do by hand.
       - storage:/app/storage
 
     # The image runs unprivileged as www-data on a port above 1024, so it needs no
@@ -121,7 +126,7 @@ services:
   # a deploy, a reboot, a crash - keeps the queued summaries, everyone's sessions and Horizon's
   # metrics history. Without it a `docker compose up -d` silently signs everybody out and drops
   # anything queued but not yet started, and the summary rows behind those wait for the hourly
-  # ExpireStalledSummaries to notice nothing is coming.
+  # ExpireStalledSummariesCommand to notice nothing is coming.
   #
   # No published port and only the internal `default` network: nothing outside this stack has
   # any business reaching it, and Redis unauthenticated on a LAN interface is a database anyone
@@ -218,7 +223,7 @@ services:
     # 120s is a deliberate compromise, not the safe number. The safe number is past a whole
     # summary - upwards of an hour - and a `docker compose down` that hangs for an hour with no
     # output is a worse thing to own than a lost summary. So a long summary caught mid-deploy
-    # does die, its row keeps started_at set, and ExpireStalledSummaries writes it off. Raise
+    # does die, its row keeps started_at set, and ExpireStalledSummariesCommand writes it off. Raise
     # this if that trade stops being the right one.
     stop_grace_period: 120s
 
