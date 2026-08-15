@@ -14,7 +14,6 @@ use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
-use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SummaryController extends Controller
 {
@@ -39,34 +38,6 @@ class SummaryController extends Controller
     public function show(Summary $summary): Response
     {
         return $this->page($summary);
-    }
-
-    /**
-     * The video's cover image, straight off the disk.
-     *
-     * Streamed through the application rather than served as a static file, which is the whole
-     * reason the video-covers disk has no url of its own: this route is inside the auth group,
-     * so an image is exactly as reachable as the summary it belongs to and no more.
-     *
-     * A row with no cover 404s rather than answering with a placeholder. Nothing asks for one
-     * blindly - the page is told whether there is an image before it renders an img at all -
-     * so reaching here for a file that is not there means a cover deleted underneath a page
-     * that was already open, and a 404 is what that is.
-     */
-    public function cover(Summary $summary): StreamedResponse
-    {
-        $disk = Storage::disk(FetchCover::DISK);
-
-        abort_unless($disk->exists($summary->file_name), 404);
-
-        return $disk->response($summary->file_name, headers: [
-            /*
-             * Private because the route is behind authentication and a shared cache must not
-             * hold it, and long because the content behind this url cannot change: the uuid
-             * names one row, a row names one video, and a video's cover is fetched once.
-             */
-            'Cache-Control' => 'private, max-age=31536000, immutable',
-        ]);
     }
 
     /**

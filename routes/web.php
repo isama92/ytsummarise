@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Auth\AuthenticationController;
 use App\Http\Controllers\Auth\FirstUserController;
+use App\Http\Controllers\Auth\OidcCallbackController;
+use App\Http\Controllers\Auth\OidcRedirectController;
 use App\Http\Controllers\ManifestController;
 use App\Http\Controllers\SummaryController;
+use App\Http\Controllers\SummaryCoverController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -40,7 +43,7 @@ Route::middleware('auth')->group(function (): void {
      *
      * Not throttled, for the same reason the route above is not: the page asks for it.
      */
-    Route::get('summaries/{summary}/cover', [SummaryController::class, 'cover'])->name('summaries.cover');
+    Route::get('summaries/{summary}/cover', SummaryCoverController::class)->name('summaries.cover');
 
     /*
      * Throttled even though it sits behind authentication: it queues work that will be a
@@ -66,8 +69,8 @@ Route::middleware('guest')->group(function (): void {
     Route::middleware('throttle:30,1')->group(function (): void {
         Route::get('login', [AuthenticationController::class, 'create'])->name('login');
 
-        Route::get('auth/redirect', [AuthenticationController::class, 'redirect'])->name('auth.redirect');
-        Route::get('auth/callback', [AuthenticationController::class, 'callback'])->name('auth.callback');
+        Route::get('auth/redirect', OidcRedirectController::class)->name('auth.redirect');
+        Route::get('auth/callback', OidcCallbackController::class)->name('auth.callback');
 
         /*
          * Only reachable while AUTH_ENABLED is false and no user exists; the controller
