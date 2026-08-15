@@ -28,6 +28,14 @@ storage/framework/views/*
 storage/pail
 storage/*.key
 
+# Everything a developer has actually summarised. CI builds from a clean checkout so the
+# published image was never affected, but the README documents building locally for a
+# different uid - and without this, `docker build` copies your own cover images into it.
+# The Dockerfile creates these three directories itself rather than relying on the copy.
+storage/app/private/*
+storage/app/public/*
+storage/app/video-covers/*
+
 .env
 .env.*
 !.env.example

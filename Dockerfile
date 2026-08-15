@@ -186,28 +186,51 @@ WORKDIR /app
 # the common case work with no chown by hand. That is the whole reason for moving off
 # www-data; nothing here wants a *particular* user, only one the host agrees with.
 #
-# Build args rather than fixed values so an operator building their own image can bake in
-# whatever their host uses:
+# THE CONTRACT, and the only sentence here worth remembering: the UID owns everything
+# writable, and the GID is free. Every path this application writes to is chowned to
+# ${UID} below, so the owner bits alone decide the answer and the group never enters
+# into it - `user: "1000:100"`, `user: "1000:1000"` and any other gid all work
+# unchanged, with no chown and no rebuild.
 #
-#   docker build --target prod --build-arg UID=1500 --build-arg GID=1500 -t ytsummarise .
+# The corollary is the part that bites: moving the UID does NOT work the same way,
+# because a storage volume that already exists still belongs to the old one. Nothing
+# in an image can fix that, so docker/entrypoint.sh checks for it and says so rather
+# than letting the first cache write fail with a stack trace.
 #
-# Anyone running the PUBLISHED image changes it at run time instead, with compose's
-# `user:` key - see compose.yml, which reads PUID and PGID for exactly that and explains
-# why it is not the linuxserver.io root-then-drop entrypoint.
+# Note what is deliberately absent: no `chmod g+rwX`. Making the writable tree
+# group-writable would offer a second, weaker way in - one that covers directories but
+# not the cover images themselves, which the video-covers disk writes 0600 (it takes
+# Laravel's default private visibility). A rule with an exception nobody remembers is
+# worse than the plain owner bits, which have none.
+#
+# Build args rather than fixed values so an operator whose host user is not 1000 can
+# bake in their own and get the same guarantee:
+#
+#   docker build --target prod --build-arg UID=1500 -t ytsummarise .
+#
+# Anyone running the PUBLISHED image sets the gid at run time with compose's `user:` key
+# - see compose.yml, which reads PUID and PGID for exactly that and explains why it is
+# not the linuxserver.io root-then-drop entrypoint.
 #
 # Declared here, below every expensive layer above, so changing either one does not
 # reinstall the extensions or yt-dlp.
 ARG UID=1000
 ARG GID=1000
 
-# -D for no password and no ageing; the login shell is nologin because nothing ever signs
-# in as this account. The home directory is not decoration: HOME is where yt-dlp keeps its
-# player cache, and without a writable one every metadata lookup in the horizon container
-# starts by failing to write it.
+# The guard is not decoration. busybox `addgroup` refuses a gid that is already taken,
+# but `adduser` does NOT refuse a taken uid - `--build-arg UID=82` otherwise exits 0 and
+# writes a second name for www-data's id, producing exactly the ambiguous image this is
+# meant to prevent. getent is the check adduser is missing.
 #
-# A UID or GID already taken in the base image (82 is www-data's) fails the build here
-# rather than quietly producing an image with two names for one id.
-RUN addgroup -g "${GID}" app \
+# -D for no password and no ageing; the login shell is nologin because nothing ever signs
+# in as this account. The home directory is not decoration either: HOME is where yt-dlp
+# keeps its player cache, and without a writable one every metadata lookup in the horizon
+# container starts by failing to write it.
+RUN if getent passwd "${UID}" >/dev/null 2>&1; then \
+        echo "UID ${UID} is already taken in the base image; pick another." >&2; \
+        exit 1; \
+    fi \
+    && addgroup -g "${GID}" app \
     && adduser -u "${UID}" -G app -h /home/app -s /sbin/nologin -D app
 
 COPY --from=vendor --chown=${UID}:${GID} /app /app
@@ -215,28 +238,37 @@ COPY --from=assets --chown=${UID}:${GID} /app/public/build /app/public/build
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/app-entrypoint.sh
 
 # /data and /config are Caddy's storage (XDG_DATA_HOME and XDG_CONFIG_HOME in the base
-# image) and are root-owned; without this the unprivileged process cannot start. The
-# storage tree is recreated because .dockerignore strips its contents, and it is chowned
-# so the named volume mounted over it inherits writable ownership on first use.
+# image) and are root-owned; without this the unprivileged process cannot start.
 #
-# g+rwX on top of the chown is what makes an override survive a NAMED volume. Docker
-# copies the image's ownership into an empty named volume once, at first mount, and never
-# again - so `user: "1500:1000"` against a volume created at 1000:1000 can only write if
-# the group can. X rather than x so the bit lands on directories and on files that are
-# already executable, and not on every .php file in the tree.
+# Every directory is listed rather than left to the source copy, because .dockerignore
+# strips the contents of all of them - both the framework's scratch directories and, so
+# that a local `docker build` cannot bake a developer's own summaries into an image,
+# everything under storage/app. Creating them here is also what makes the chown below
+# total: the named volume mounted over /app/storage inherits this ownership on first
+# use, and the entrypoint's writability check has something to test.
 RUN mkdir -p \
+        /app/storage/app/private \
+        /app/storage/app/public \
+        /app/storage/app/video-covers \
         /app/storage/framework/cache \
         /app/storage/framework/sessions \
         /app/storage/framework/views \
         /app/storage/logs \
         /app/bootstrap/cache \
-    && chown -R "${UID}:${GID}" /app/storage /app/bootstrap/cache /data /config \
-    && chmod -R g+rwX /app/storage /app/bootstrap/cache /data /config /home/app
+    && chown -R "${UID}:${GID}" /app/storage /app/bootstrap/cache /data /config
 
 # 8080, not 80: a port above 1024 needs no capability, which is what lets compose run
 # this container with `cap_drop: ALL` and nothing added back. Traefik's
 # loadbalancer.server.port in compose.yml has to agree with this.
-ENV SERVER_NAME=":8080" \
+# HOME is pinned rather than left to the passwd lookup, and this is the whole reason
+# arbitrary gids are safe. Docker derives HOME from /etc/passwd, and `user: "1000:100"`
+# matches no entry there - the passwd line says 1000:1000 - so it falls back to HOME=/,
+# which is root-owned and unwritable. yt-dlp then cannot create its player cache and,
+# because FetchTranscript runs it with --no-warnings, says nothing about it: every
+# metadata lookup silently re-derives the signature instead. One ENV removes the whole
+# failure mode for every uid and gid at once.
+ENV HOME="/home/app" \
+    SERVER_NAME=":8080" \
     SERVER_ROOT="/app/public"
 
 # Numeric rather than `USER app`, so the image declares an id a host can reason about

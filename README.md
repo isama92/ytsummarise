@@ -237,12 +237,22 @@ with `APP_DEBUG=false` hiding the reason.
 ### Which user it runs as
 
 The image runs unprivileged as **1000:1000**, and `compose.yml` reads `PUID` and `PGID`
-from the `.env` beside it if you want different ones:
+from the `.env` beside it:
 
 ```sh
-PUID=1500
-PGID=1500
+PGID=100
 ```
+
+**The uid owns everything writable, and the gid is free.** `1000:100`, `1000:1000`,
+anything — set `PGID` to whatever your host wants and nothing else has to change. The
+image chowns every path the application writes to, so the owner bits decide and the group
+is never consulted. There is deliberately no group-writable fallback: it would cover the
+directories but not the cover images, which are written `0600`, and a rule with an
+exception is worse than one without.
+
+`PUID` is the half that is not free, because a storage volume that already exists still
+belongs to whoever created it. Nothing in an image can change that, so the entrypoint
+tests for it and stops with the chown command rather than letting it become a puzzle.
 
 That is docker's own `user:` key rather than the root-then-drop entrypoint linuxserver.io
 images use, and the difference is not cosmetic. Dropping privileges with `su-exec` needs
@@ -252,27 +262,40 @@ also covers all three containers, which an entrypoint could not — `horizon` an
 `scheduler` set their own `entrypoint:` and never run `app-entrypoint.sh`.
 
 1000 rather than the base image's `www-data`, which is 82:82 on Alpine and corresponds to
-nothing on a host. The only thing that ever needs to agree is `/app/storage`, where the
-cover images live.
+nothing on a host. Being able to hand the container a directory your own user already
+owns is the whole point of the move.
 
-An empty named volume takes its ownership from the image the first time it is mounted, so
-a fresh stack needs nothing. Changing `PUID` on a stack that has already run does:
+#### Upgrading from an older image
+
+**Read this before pulling.** Every version before this one ran as `82:82`, and a
+`storage` volume created then still says so. The new container cannot write to it, and it
+will refuse to start until you fix that:
 
 ```sh
 docker compose down
 docker volume ls                                  # <name> is the directory this ran from
-docker run --rm -v <name>_storage:/s alpine chown -R 1500:1500 /s
-docker compose up -d
+docker run --rm -v <name>_storage:/s alpine chown -R 1000:1000 /s
+docker compose pull && docker compose up -d
 ```
 
-A bind mount inherits nothing at all — chown the host directory to `PUID:PGID` before the
-first `up`, or the first summary logs a permission error instead of writing its cover.
+Use `$PUID` in place of `1000` if you set one. A bind mount is chowned on the host
+instead. A fresh stack needs none of this — an empty named volume takes the image's
+ownership at first mount.
 
-Building your own image bakes the default in instead:
+Skip it and the failure is loud but not where you would look: the entrypoint runs
+`view:cache` long before frankenphp listens, so the **web** container restart-loops, `/up`
+never answers, and `horizon` and `scheduler` stay blocked on `depends_on:
+service_healthy`. The whole stack stays down, and the guard exists so the logs say why.
+
+#### A different uid
+
+Rebuild rather than override, so the image and the volume agree from the start:
 
 ```sh
-docker build --target prod --build-arg UID=1500 --build-arg GID=1500 -t ytsummarise .
+docker build --target prod --build-arg UID=1500 -t ytsummarise .
 ```
+
+`--build-arg GID=` exists too, but it only sets the default that `PGID` overrides anyway.
 
 ## Test coverage
 

@@ -80,10 +80,20 @@ services:
       # Must match EXPOSE / SERVER_NAME in the Dockerfile.
       - "traefik.http.services.ytsummarise.loadbalancer.server.port=8080"
 
-    # Which uid:gid every process in this container runs as. The image already defaults to
-    # 1000:1000 - the first ordinary user on most Linux hosts - and this line only exists
-    # so an operator can move it without rebuilding: put PUID and PGID in the .env beside
-    # this file and compose interpolates them here. Unset, the defaults below apply.
+    # Which uid:gid every process in this container runs as. Put PUID and PGID in the .env
+    # beside this file and compose interpolates them here; unset, the image's own
+    # 1000:1000 applies.
+    #
+    # The two are not equally free, and the difference is the only thing to understand:
+    #
+    #   PGID is free. Set it to 100, to 1000, to anything. The image owns every writable
+    #   path as its uid, so the owner bits decide and the group is never consulted.
+    #   Nothing to chown, nothing to rebuild.
+    #
+    #   PUID is not, unless the storage volume agrees with it. An empty named volume takes
+    #   the image's ownership at first mount and keeps it forever, and a bind mount never
+    #   takes it at all - so a moved uid meets a directory belonging to somebody else. The
+    #   entrypoint checks for exactly this and prints the chown; see the note on volumes.
     #
     # This is docker's own `user:` key and NOT the PUID/PGID entrypoint that
     # linuxserver.io images (radarr, sonarr) use, which is a deliberate choice rather than
@@ -97,8 +107,6 @@ services:
     # their own `entrypoint:` and never run app-entrypoint.sh, so a chowning entrypoint
     # would leave two of the three writers to the shared volume running as somebody else.
     # The anchor below is what keeps all three honest instead.
-    #
-    # What `user:` does NOT do is re-own an existing volume. See the note on volumes.
     user: &app_user "${PUID:-1000}:${PGID:-1000}"
 
     volumes:
@@ -112,20 +120,25 @@ services:
       # summaries:prune deletes it from a third.
       #
       # An empty named volume takes its ownership from the image ONCE, the first time it
-      # is mounted, and never again. So a fresh stack needs no chown at all, and changing
-      # PUID/PGID on a stack that has already run needs one by hand:
+      # is mounted, and never again. A fresh stack therefore needs no chown at all, and
+      # changing PGID afterwards needs none either - the uid still owns everything.
+      #
+      # Changing PUID does, and so does UPGRADING FROM AN IMAGE OLDER THAN THIS ONE: the
+      # container used to run as the base image's www-data, 82:82, and a volume created
+      # then still says so. The entrypoint refuses to start rather than half-work, and
+      # prints this:
       #
       #   docker compose down
       #   docker volume ls                       # find the real name, prefixed by the
       #                                          # directory this file sits in
-      #   docker run --rm -v <name>_storage:/s alpine chown -R 1500:1500 /s
+      #   docker run --rm -v <name>_storage:/s alpine chown -R 1000:1000 /s
       #   docker compose up -d
       #
-      # Swapping this for a bind mount (`- ./storage:/app/storage`) skips all of that but
-      # inherits nothing either: the host directory keeps whatever it already was, so it
-      # has to be owned by PUID:PGID before the stack starts. Matching the two is the
-      # entire reason the image moved off the base image's www-data (82:82), which is an
-      # Alpine id that corresponds to nothing on the host.
+      # Swapping this for a bind mount (`- ./storage:/app/storage`) inherits nothing at
+      # all: the host directory keeps whatever it already was, so `chown -R 1000:1000` it
+      # before the first `up`. Being able to do that - to hand the container a directory
+      # the host user already owns - is the entire reason the image moved off 82:82, which
+      # is an Alpine id that corresponds to nothing on a host.
       - storage:/app/storage
 
     # The image runs unprivileged on a port above 1024, so it needs no

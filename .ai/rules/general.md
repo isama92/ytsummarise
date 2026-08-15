@@ -1,7 +1,6 @@
 ---
 paths:
   - '**'
-  - '{Dockerfile,compose.yml,docker/**}'
 ---
 
 # General
@@ -39,9 +38,13 @@ If a browser check is wanted and nothing is listening, say so and wait. `ss -ltn
 
 Practical trap when a process does need finding: `pkill -f "artisan serve --port=8123"` kills the shell running it, because that shell's own command line contains the pattern. Exit code 144 with no output is what that looks like. Use `pgrep -af "port=812[3]"` to look, and ask the user to stop it.
 
-## Container user is UID/GID build args plus compose `user:`, never a PUID entrypoint
-The prod image runs as 1000:1000 (`ARG UID`/`ARG GID`, user `app`), not the base image's www-data (82:82, an Alpine id matching nothing on a host). Operators override at run time with compose's `user: "${PUID:-1000}:${PGID:-1000}"`, anchored across ytsummarise, horizon and scheduler.
+## The container's uid owns everything writable, and the gid is free
+The prod image runs as 1000:1000 (`ARG UID`/`ARG GID`, user `app`), not the base image's www-data (82:82, an Alpine id matching nothing on a host). compose interpolates `user: "${PUID:-1000}:${PGID:-1000}"` into all three services from one anchor.
 
-Do not replace this with the linuxserver.io PUID/PGID entrypoint. That starts as root and drops with su-exec, which needs CAP_SETUID and CAP_SETGID - and every service here runs `cap_drop: ALL`. It would also only cover one container: horizon and scheduler set their own `entrypoint:` and never run app-entrypoint.sh, so two of the three writers to the shared storage volume would keep the wrong uid.
+Every path the application writes to is chowned to UID, so the owner bits decide and the group is never consulted: `user: "1000:100"` and any other gid work with no chown and no rebuild. Do not add a `chmod g+rwX` fallback. It covers directories but not the cover images, which the video-covers disk writes 0600 under Laravel's default private visibility, so it would turn one rule into one rule plus an exception nobody remembers.
 
-Writable paths are chowned UID:GID and then `chmod -R g+rwX`, because an empty named volume copies image ownership once at first mount and never again. That is what lets `user: "1500:1000"` write to a volume created at 1000:1000; `user: "1500:1500"` cannot, and needs the volume chowned by hand.
+Moving the UID is the case permissions cannot fix - an existing volume still belongs to the old one. docker/entrypoint.sh tests the writable paths before `config:cache` and exits with the chown, because unguarded it surfaces as `view:cache` throwing, and horizon and scheduler are both blocked on the web container being healthy, so a wrong uid takes the whole stack down and blames Blade.
+
+Do not replace any of this with the linuxserver.io PUID/PGID entrypoint. That starts as root and drops with su-exec, which needs CAP_SETUID and CAP_SETGID - and every service here runs `cap_drop: ALL`. It would also only cover one container, since horizon and scheduler set their own `entrypoint:` and never run app-entrypoint.sh.
+
+Two build-time traps: busybox `adduser` does NOT reject a uid that is already taken (only `addgroup` checks the gid), hence the `getent` guard; and `USER 1000:1000` leaves HOME to a passwd lookup that `user: "1000:100"` does not match, so `ENV HOME` is pinned or yt-dlp silently loses its player cache to an unwritable `/`.
