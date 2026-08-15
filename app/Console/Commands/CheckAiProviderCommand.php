@@ -37,7 +37,7 @@ use function Laravel\Ai\agent;
  */
 #[Signature('ai:check')]
 #[Description('Check that the configured AI provider is reachable and answers usefully')]
-class CheckAiProvider extends Command
+class CheckAiProviderCommand extends Command
 {
     /**
      * The drivers that answer a GET on /models.

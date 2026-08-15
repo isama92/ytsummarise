@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use App\Console\Commands\ExpireStalledSummaries;
-use App\Console\Commands\PruneSummaries;
+use App\Console\Commands\ExpireStalledSummariesCommand;
+use App\Console\Commands\PruneSummariesCommand;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -33,7 +33,7 @@ Artisan::command('inspire', function (): void {
  * wedges the backstop until it expires, and the default expiry is a day. A guard that cannot
  * plausibly be needed is not worth a failure mode that can.
  */
-Schedule::command(ExpireStalledSummaries::class)->hourly();
+Schedule::command(ExpireStalledSummariesCommand::class)->hourly();
 
 /*
  * Daily, and in the middle of the night, because deleting a week-old row is not urgent to the
@@ -47,7 +47,7 @@ Schedule::command(ExpireStalledSummaries::class)->hourly();
  * No withoutOverlapping, for the same reasons as above: a day apart and one indexed delete, and
  * a mutex in the cache is a way to wedge a backstop that cannot plausibly need one.
  */
-Schedule::command(PruneSummaries::class)->dailyAt('03:00');
+Schedule::command(PruneSummariesCommand::class)->dailyAt('03:00');
 
 /*
  * Every five minutes, which is the cadence Horizon's own graphs are drawn against.

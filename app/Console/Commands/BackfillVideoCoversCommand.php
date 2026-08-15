@@ -31,7 +31,7 @@ use Illuminate\Support\Sleep;
  */
 #[Signature('summaries:backfill-covers')]
 #[Description('Fetch cover images for summaries that do not have one yet')]
-class BackfillVideoCovers extends Command
+class BackfillVideoCoversCommand extends Command
 {
     /**
      * How long to wait between downloads, in milliseconds.

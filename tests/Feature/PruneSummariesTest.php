@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use App\Console\Commands\PruneSummaries;
+use App\Console\Commands\PruneSummariesCommand;
 use App\Models\Summary;
 use App\Services\YouTube\Actions\FetchCover;
 use Illuminate\Console\Scheduling\Schedule;
@@ -255,5 +255,5 @@ test('only a deliberate zero switches retention off', function (?string $value, 
 ]);
 
 test('the command is summaries:prune', function (): void {
-    expect((new PruneSummaries)->getName())->toBe('summaries:prune');
+    expect((new PruneSummariesCommand)->getName())->toBe('summaries:prune');
 });

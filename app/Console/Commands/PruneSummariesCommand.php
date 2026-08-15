@@ -43,7 +43,7 @@ use Illuminate\Support\Facades\Storage;
  */
 #[Signature('summaries:prune')]
 #[Description('Delete summaries, and the transcripts with them, past their retention window')]
-class PruneSummaries extends Command
+class PruneSummariesCommand extends Command
 {
     /**
      * Execute the console command.
