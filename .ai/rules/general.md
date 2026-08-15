@@ -37,3 +37,16 @@ The dev server belongs to whoever is at the keyboard. Do not run `composer run d
 If a browser check is wanted and nothing is listening, say so and wait. `ss -ltnp | grep -E ":(8000|5173)"` is the cheap way to find out.
 
 Practical trap when a process does need finding: `pkill -f "artisan serve --port=8123"` kills the shell running it, because that shell's own command line contains the pattern. Exit code 144 with no output is what that looks like. Use `pgrep -af "port=812[3]"` to look, and ask the user to stop it.
+
+## Container ownership: the storage volume must belong to PUID, and that is the whole rule
+The prod image runs as 1000:1000 (`ARG UID`, user `app`), not the base image's www-data (82:82, an Alpine id matching nothing on a host). compose interpolates `user: "${PUID:-1000}:${PGID:-1000}"` into all three services from one anchor, and both halves are genuinely free.
+
+The gid is free because every writable path is owned by the uid, so the owner bits decide and the group is never consulted. Do not add a `chmod g+rwX` fallback: it covers directories but not the cover images, which the video-covers disk writes 0600 under Laravel's default private visibility, so it would turn one rule into one rule plus an exception nobody remembers.
+
+The uid is free only because the Dockerfile's ENV block moves every runtime write into /app/storage - `APP_CONFIG_CACHE`, `APP_ROUTES_CACHE` and `APP_EVENTS_CACHE` off /app/bootstrap/cache, `XDG_DATA_HOME` and `XDG_CONFIG_HOME` off /data and /config. Leave those alone. Without them an overridden uid meets image layers it cannot write and no chown can reach, which is what makes a PUID knob a lie in most PHP images. `APP_PACKAGES_CACHE` and `APP_SERVICES_CACHE` deliberately stay put: built by `package:discover` at image build, read-only and world-readable afterwards.
+
+docker/preflight.sh runs in ALL THREE services, not just the one with app-entrypoint.sh. `depends_on: service_healthy` orders `docker compose up` only - a host reboot restarts everything at once, and horizon needs nothing but Redis to start draining the queue against a storage tree it cannot write, losing every cover silently because the disk is `throw => false`.
+
+Do not replace any of this with the linuxserver.io PUID/PGID entrypoint. That starts as root and drops with su-exec, which needs CAP_SETUID and CAP_SETGID - and every service here runs `cap_drop: ALL`.
+
+Two things verified the hard way, after being recorded here wrongly first: busybox `adduser` DOES reject a uid already in use, on this base image, so no getent guard is needed - and `addgroup -g 100` is the one that fails, since `users` holds gid 100, which is why there is no GID build arg. HOME resolves from the uid's passwd entry whatever the gid, so `user: "1000:100"` keeps it; only an unknown uid falls back to an unwritable `/`, which `ENV HOME` covers. Check claims about the base image against `dunglas/frankenphp:php8.5-alpine`, never against plain `alpine` - uid 82 is free there and 82 is exactly the id worth testing.

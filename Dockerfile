@@ -179,29 +179,131 @@ COPY docker/php/opcache.ini "$PHP_INI_DIR/conf.d/zz-opcache.ini"
 
 WORKDIR /app
 
-COPY --from=vendor --chown=www-data:www-data /app /app
-COPY --from=assets --chown=www-data:www-data /app/public/build /app/public/build
-COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/app-entrypoint.sh
+# Who this runs as. The base image ships www-data at 82:82, which is an Alpine packaging
+# convention and matches nothing on a Linux host - so a bind mount at /app/storage is
+# owned by somebody else's uid and the container cannot write a cover image into it.
+# 1000:1000 is the first ordinary user on a Debian, Ubuntu or Arch install, which makes
+# the common case work with no chown by hand. That is the whole reason for moving off
+# www-data; nothing here wants a *particular* user, only one the host agrees with.
+#
+# THE CONTRACT, and the only sentence here worth remembering: the storage volume must be
+# owned by the uid the container runs as, and nothing else has to agree with anything.
+#
+# Both halves of `user: "1001:100"` are free, which is not how a PHP image usually
+# behaves and takes two deliberate pieces to arrange:
+#
+#   The GID is free because every writable path is owned by the UID, so the owner bits
+#   alone decide and the group is never consulted.
+#
+#   The UID is free because the ENV block further down moves every runtime write into
+#   /app/storage. Without that it could not be: config:cache writes into
+#   /app/bootstrap/cache and Caddy into /data and /config, all image layers that no
+#   volume covers and no chown reaches, so an overridden uid would meet its own image
+#   and lose. Owning one directory is now the whole of the story.
+#
+# Note what is deliberately absent: no `chmod g+rwX`. Making the writable tree
+# group-writable would offer a second, weaker way in - one that covers directories but
+# not the cover images themselves, which the video-covers disk writes 0600 (it takes
+# Laravel's default private visibility). A rule with an exception nobody remembers is
+# worse than the plain owner bits, which have none.
+#
+# 1000 as the default because it is the first ordinary user on a Debian, Ubuntu or Arch
+# install, so a bind-mounted storage directory is writable with no chown by hand. The
+# base image's www-data (82:82) is an Alpine packaging convention that corresponds to
+# nothing on a host, which is the whole reason for moving off it.
+#
+# UID stays a build arg for a fork that wants a different default, but nobody deploying
+# this needs it - PUID in compose.yml covers that at run time. There is deliberately NO
+# GID arg: the runtime gid is free, so the build-time one is arbitrary, and naming it
+# only invited `--build-arg GID=100` to fail on Alpine's `users` group. `addgroup -S`
+# takes whatever is going.
+#
+# Declared here, below every expensive layer above, so changing it does not reinstall
+# the extensions or yt-dlp.
+ARG UID=1000
 
-# /data and /config are Caddy's storage (XDG_DATA_HOME and XDG_CONFIG_HOME in the base
-# image) and are root-owned; without this the unprivileged process cannot start. The
-# storage tree is recreated because .dockerignore strips its contents, and it is chowned
-# so the named volume mounted over it inherits writable ownership on first use.
+# -D for no password and no ageing; the login shell is nologin because nothing ever signs
+# in as this account. The home directory is not decoration: HOME is where yt-dlp keeps its
+# player cache, and without a writable one every metadata lookup in the horizon container
+# starts by failing to write it.
+#
+# No guard on UID: busybox `adduser` refuses a uid that is already in use on its own
+# ("adduser: uid '82' in use", exit 1), so `--build-arg UID=82` fails the build here
+# without help. A hand-written getent check was tried and removed as duplicate.
+RUN addgroup -S app \
+    && adduser -u "${UID}" -G app -h /home/app -s /sbin/nologin -D app
+
+COPY --from=vendor --chown=app:app /app /app
+COPY --from=assets --chown=app:app /app/public/build /app/public/build
+COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/app-entrypoint.sh
+COPY --chmod=0755 docker/preflight.sh /usr/local/bin/app-preflight.sh
+
+# Everything writable, in one tree, so that owning /app/storage is the whole of what an
+# operator has to do. See the ENV block below for the three caches and Caddy's two
+# directories that are redirected in here to make that true.
+#
+# Every directory is listed rather than left to the source copy, because .dockerignore
+# strips the contents of all of them - both the framework's scratch directories and,
+# so that a local `docker build` cannot bake a developer's own summaries into an image,
+# everything under storage/app. Creating them here is also what makes the chown total:
+# the named volume mounted over /app/storage inherits this ownership on first use, and
+# docker/preflight.sh has something to test.
+#
+# bootstrap/cache is chowned but is NOT written at runtime any more. It still holds
+# packages.php and services.php, both written by `package:discover` in the vendor stage
+# and only ever read from here on, at 0644 under an 0755 directory - so they stay
+# readable whatever uid the container ends up running as.
 RUN mkdir -p \
+        /app/storage/app/private \
+        /app/storage/app/public \
+        /app/storage/app/video-covers \
+        /app/storage/caddy/config \
+        /app/storage/caddy/data \
+        /app/storage/framework/bootstrap \
         /app/storage/framework/cache \
         /app/storage/framework/sessions \
         /app/storage/framework/views \
         /app/storage/logs \
         /app/bootstrap/cache \
-    && chown -R www-data:www-data /app/storage /app/bootstrap/cache /data /config
+    && chown -R app:app /app/storage /app/bootstrap/cache
 
+# The five variables that make PUID mean what its name says.
+#
+# Without them the uid is not overridable at all, whatever compose offers: `config:cache`
+# writes into /app/bootstrap/cache and Caddy writes into /data and /config, and all three
+# are image layers owned by the build uid that no volume covers and no chown can reach.
+# Pointing them into /app/storage moves every runtime write behind the one directory an
+# operator can own, which reduces the entire ownership story to a single rule - the
+# storage volume must belong to the uid - and makes `user: "1001:100"` on a bind mount
+# work as ordinarily as `user: "1000:1000"` on a named volume.
+#
+# Laravel resolves these through Application::normalizeCachePath(), which takes an
+# absolute path verbatim; XDG_DATA_HOME and XDG_CONFIG_HOME are the base image's own way
+# of telling Caddy where to keep its autosaved config. Deliberately NOT relocated:
+# APP_PACKAGES_CACHE and APP_SERVICES_CACHE, which are built into the image and read-only
+# at runtime - moving them would only make every container regenerate them on first boot.
+#
+# HOME is pinned for the same family of reasons. Docker derives it from /etc/passwd, so
+# it survives a gid change on its own, but NOT a uid the image has no entry for - that
+# falls back to an unwritable HOME=/, and yt-dlp then loses its player cache silently
+# behind the --no-warnings that FetchTranscript passes.
+#
 # 8080, not 80: a port above 1024 needs no capability, which is what lets compose run
 # this container with `cap_drop: ALL` and nothing added back. Traefik's
 # loadbalancer.server.port in compose.yml has to agree with this.
-ENV SERVER_NAME=":8080" \
+ENV APP_CONFIG_CACHE="/app/storage/framework/bootstrap/config.php" \
+    APP_EVENTS_CACHE="/app/storage/framework/bootstrap/events.php" \
+    APP_ROUTES_CACHE="/app/storage/framework/bootstrap/routes.php" \
+    XDG_CONFIG_HOME="/app/storage/caddy/config" \
+    XDG_DATA_HOME="/app/storage/caddy/data" \
+    HOME="/home/app" \
+    SERVER_NAME=":8080" \
     SERVER_ROOT="/app/public"
 
-USER www-data
+# Numeric rather than `USER app`, so the image declares an id a host can reason about
+# instead of a name that only means something inside it. Both forms are the same process
+# either way; this one matches what `docker inspect` and compose's `user:` speak.
+USER ${UID}:${GID}
 EXPOSE 8080
 
 ENTRYPOINT ["app-entrypoint.sh"]

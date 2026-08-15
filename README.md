@@ -234,6 +234,70 @@ requests go through the `web` group, reach `EncryptCookies` and throw. So the un
 symptom is three healthy containers, a satisfied Traefik, and a 500 for every visitor
 with `APP_DEBUG=false` hiding the reason.
 
+### Which user it runs as
+
+The image runs unprivileged as **1000:1000**, and `compose.yml` reads `PUID` and `PGID`
+from the `.env` beside it:
+
+```sh
+PUID=1000
+PGID=100
+```
+
+**One rule sits behind both: the storage volume has to be owned by `PUID`.** Nothing else
+in the image has to agree with anything, because every runtime write lands in
+`/app/storage` — the Dockerfile points Laravel's config, route and event caches there
+instead of `bootstrap/cache`, and Caddy's autosaved config there instead of the
+root-owned `/data`. Owning one directory is the whole of it.
+
+`PGID` is freer still and needs not even that. Every writable path belongs to the uid, so
+the owner bits decide and the group is never consulted — `1000:100` and `1000:1000` are
+equally fine. There is deliberately no group-writable fallback: it would cover the
+directories but not the cover images, which are written `0600`, and a rule with an
+exception is worse than one without.
+
+A fresh stack at the default needs nothing done. An empty named volume takes the image's
+ownership at first mount, so it already belongs to 1000.
+
+That is docker's own `user:` key rather than the root-then-drop entrypoint linuxserver.io
+images use, and the difference is not cosmetic. Dropping privileges with `su-exec` needs
+`CAP_SETUID` and `CAP_SETGID`, and every service in this stack runs with `cap_drop: ALL`;
+`user:` is applied by the kernel at exec and costs no capability and no root phase. All
+three containers run `docker/preflight.sh` before anything else, including the two that
+set their own `entrypoint:` — `depends_on` orders `docker compose up`, but a host reboot
+restarts everything at once, and a worker that cannot write covers loses them silently.
+
+1000 rather than the base image's `www-data`, which is 82:82 on Alpine and corresponds to
+nothing on a host. Being able to hand the container a directory your own user already
+owns is the point of the move.
+
+#### When a chown is needed
+
+Three cases: a `PUID` other than the one that created the volume, a bind mount (which
+inherits nothing, ever), and **upgrading from an image older than this one** — those ran
+as `82:82`, so an existing volume still belongs to www-data. Every container refuses to
+start until it is fixed, and prints this:
+
+```sh
+docker compose down
+docker volume ls                                  # <name> is the directory this ran from
+docker run --rm -v <name>_storage:/s alpine chown -R 1000:1000 /s
+docker compose pull && docker compose up -d
+```
+
+Use your own `PUID:PGID` in place of `1000:1000`. For a bind mount it is just
+`sudo chown -R 1000:1000 ./storage` on the host, before the first `up`.
+
+Skipping it fails loudly but not where you would look: the guard runs before frankenphp
+listens, so the **web** container restart-loops and `/up` never answers. That is the point
+of it — unguarded, the first symptom was `view:cache` throwing on a Blade template.
+
+#### A different uid
+
+Nothing to build. Set `PUID` to whatever your host user is, chown the volume to match, and
+the image runs as that. `--build-arg UID=` exists for a fork that wants a different
+default baked in, but no deployment needs it.
+
 ## Test coverage
 
 `phpunit.xml` scopes coverage to `app/`, and the suite is kept at 100%:

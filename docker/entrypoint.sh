@@ -20,6 +20,12 @@ if [ -z "${APP_KEY}" ]; then
     exit 1
 fi
 
+# The other misconfiguration this cannot survive, and the one that would otherwise
+# surface as `view:cache` throwing on a compiled view: a storage tree the container
+# cannot write to. Its own file, because horizon and scheduler run it too - see the
+# script for why their depends_on is not the cover it looks like.
+app-preflight.sh
+
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache

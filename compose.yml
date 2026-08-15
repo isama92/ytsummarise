@@ -80,21 +80,62 @@ services:
       # Must match EXPOSE / SERVER_NAME in the Dockerfile.
       - "traefik.http.services.ytsummarise.loadbalancer.server.port=8080"
 
+    # Which uid:gid every process in this container runs as. Put PUID and PGID in the .env
+    # beside this file and compose interpolates them here; unset, 1000:1000 applies.
+    #
+    # Both are free, and there is exactly one rule behind them: the storage volume has to
+    # be owned by PUID. Nothing else in the image has to agree with anything - the
+    # Dockerfile redirects Laravel's bootstrap caches and Caddy's own state into
+    # /app/storage so that owning that one directory is the whole of it. PGID is freer
+    # still and needs not even that, because every writable path is owned by the uid and
+    # the group is never consulted.
+    #
+    # A fresh stack needs nothing done: an empty named volume takes the image's ownership
+    # at first mount, so PUID=1000 (the default) simply works. Any other value, or a bind
+    # mount, or a volume from an older image, wants a chown first - the README section
+    # "Which user it runs as" is the one copy of that procedure, and every container here
+    # runs docker/preflight.sh, which stops with the exact command rather than letting a
+    # cache write fail somewhere further in.
+    #
+    # This is docker's own `user:` key and NOT the PUID/PGID entrypoint that
+    # linuxserver.io images (radarr, sonarr) use, which is a deliberate choice rather than
+    # a shortcut. That pattern starts the container as root, chowns its data directory and
+    # drops privileges with su-exec - and su-exec needs CAP_SETUID and CAP_SETGID, which
+    # `cap_drop: ALL` below takes away. It is the same trap already documented on the redis
+    # service, and it would cost this stack its root-free, capability-free posture to work
+    # around. `user:` is applied by the kernel at exec, so it needs neither.
+    #
+    # It would also only ever have covered a third of the stack: horizon and scheduler set
+    # their own `entrypoint:` and never run app-entrypoint.sh, so a chowning entrypoint
+    # would leave two of the three writers to the shared volume running as somebody else.
+    # The anchor below is what keeps all three honest instead.
+    user: &app_user "${PUID:-1000}:${PGID:-1000}"
+
     volumes:
-      # Only really needed for storage/app, which is where video cover images are
-      # written: one jpeg per summary, fetched once by the summarising chain and served
-      # from here on every page view. Logs go to stdout and the cache, session and queue
-      # drivers are all Redis, so the framework writes very little else.
+      # Everything this application writes, and the only thing PUID has to agree with.
+      # Cover images are the visible part - one jpeg per summary, written by a worker,
+      # read by the web container and deleted by summaries:prune, which is what the same
+      # volume in all three services is for. The rest is quieter than it looks: logs go to
+      # stdout, cache and sessions and the queue are all Redis, and the framework's own
+      # scratch is small. Two things are here that would not be by default, both moved by
+      # the Dockerfile so that owning this one directory is sufficient - Laravel's config,
+      # route and event caches, otherwise /app/bootstrap/cache, and Caddy's autosaved
+      # config, otherwise the root-owned /data and /config.
       #
-      # The same volume is mounted in horizon and scheduler below, which is what makes
-      # this work: a cover is written by a worker and read by the web container, and
-      # summaries:prune deletes it from a third. The volume inherits www-data ownership
-      # from the image on first mount, so there is no chown to do by hand.
+      # An empty named volume takes its ownership from the image ONCE, at first mount, and
+      # never again. So a fresh stack at the default PUID=1000 needs nothing done to it,
+      # and changing PGID later needs nothing either.
+      #
+      # A chown IS needed for a different PUID, for a bind mount, and when UPGRADING FROM
+      # AN IMAGE OLDER THAN THIS ONE - those ran as the base image's www-data, 82:82, and
+      # a volume created then still says so. docker/preflight.sh stops every container
+      # here with the exact command rather than letting it surface later and elsewhere;
+      # the README section "Which user it runs as" is the one written copy.
       - storage:/app/storage
 
-    # The image runs unprivileged as www-data on a port above 1024, so it needs no
-    # Linux capabilities at all. Not read_only: the entrypoint writes the config,
-    # route, view and event caches into bootstrap/cache on every start.
+    # The image runs unprivileged on a port above 1024, so it needs no Linux capabilities
+    # at all. Not read_only either: the entrypoint builds the config, route, view and
+    # event caches on every start, into the storage volume.
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
@@ -203,7 +244,21 @@ services:
     #
     # No flags: what --max-time and --tries used to say here now lives in config/horizon.php,
     # per supervisor, where the dashboard can also show it.
-    entrypoint: ["php", "artisan", "horizon"]
+    #
+    # The preflight runs first because this container writes the cover images, and it is
+    # the one place `depends_on` below does not actually protect: that ordering applies to
+    # `docker compose up`, not to a host reboot, where the daemon restarts all three
+    # independently. Horizon needs nothing but Redis to start working, so without this it
+    # would drain the queue against a storage tree it cannot write to and lose every cover
+    # silently - the video-covers disk is `throw => false`. exec so that Horizon, not the
+    # shell, is pid 1 and receives the SIGTERM that stop_grace_period below is about.
+    entrypoint: ["sh", "-c", "app-preflight.sh && exec php artisan horizon"]
+
+    # Must match the web container's: this is the service that WRITES the cover images the
+    # other two read and delete. A mismatch here is the one that actually bites, and it
+    # would show up as a summary whose page renders without its cover rather than as
+    # anything that fails loudly.
+    user: *app_user
 
     networks:
       - default
@@ -258,7 +313,11 @@ services:
     env_file: .env
     environment: *worker_environment
 
-    entrypoint: ["php", "artisan", "schedule:work"]
+    # summaries:prune unlinks cover images, so this one writes to the volume too and gets
+    # the same preflight, for the same reboot reason as horizon.
+    entrypoint: ["sh", "-c", "app-preflight.sh && exec php artisan schedule:work"]
+
+    user: *app_user
 
     networks:
       - default

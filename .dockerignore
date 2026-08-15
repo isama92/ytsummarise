@@ -28,6 +28,13 @@ storage/framework/views/*
 storage/pail
 storage/*.key
 
+# Everything a developer has actually summarised. CI builds from a clean checkout so the
+# published image was never affected, but a local `docker build` would otherwise copy your
+# own cover images into it. The whole subtree rather than the three known directories,
+# because livewire-tmp, a stray export or a loose file sitting directly in storage/app
+# would each have slipped past a narrower list. The Dockerfile creates what it needs.
+storage/app/*
+
 .env
 .env.*
 !.env.example
