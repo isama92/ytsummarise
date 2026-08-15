@@ -234,6 +234,46 @@ requests go through the `web` group, reach `EncryptCookies` and throw. So the un
 symptom is three healthy containers, a satisfied Traefik, and a 500 for every visitor
 with `APP_DEBUG=false` hiding the reason.
 
+### Which user it runs as
+
+The image runs unprivileged as **1000:1000**, and `compose.yml` reads `PUID` and `PGID`
+from the `.env` beside it if you want different ones:
+
+```sh
+PUID=1500
+PGID=1500
+```
+
+That is docker's own `user:` key rather than the root-then-drop entrypoint linuxserver.io
+images use, and the difference is not cosmetic. Dropping privileges with `su-exec` needs
+`CAP_SETUID` and `CAP_SETGID`, and every service in this stack runs with `cap_drop: ALL`;
+`user:` is applied by the kernel at exec and costs no capability and no root phase. It
+also covers all three containers, which an entrypoint could not — `horizon` and
+`scheduler` set their own `entrypoint:` and never run `app-entrypoint.sh`.
+
+1000 rather than the base image's `www-data`, which is 82:82 on Alpine and corresponds to
+nothing on a host. The only thing that ever needs to agree is `/app/storage`, where the
+cover images live.
+
+An empty named volume takes its ownership from the image the first time it is mounted, so
+a fresh stack needs nothing. Changing `PUID` on a stack that has already run does:
+
+```sh
+docker compose down
+docker volume ls                                  # <name> is the directory this ran from
+docker run --rm -v <name>_storage:/s alpine chown -R 1500:1500 /s
+docker compose up -d
+```
+
+A bind mount inherits nothing at all — chown the host directory to `PUID:PGID` before the
+first `up`, or the first summary logs a permission error instead of writing its cover.
+
+Building your own image bakes the default in instead:
+
+```sh
+docker build --target prod --build-arg UID=1500 --build-arg GID=1500 -t ytsummarise .
+```
+
 ## Test coverage
 
 `phpunit.xml` scopes coverage to `app/`, and the suite is kept at 100%:

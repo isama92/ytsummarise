@@ -179,21 +179,59 @@ COPY docker/php/opcache.ini "$PHP_INI_DIR/conf.d/zz-opcache.ini"
 
 WORKDIR /app
 
-COPY --from=vendor --chown=www-data:www-data /app /app
-COPY --from=assets --chown=www-data:www-data /app/public/build /app/public/build
+# Who this runs as. The base image ships www-data at 82:82, which is an Alpine packaging
+# convention and matches nothing on a Linux host - so a bind mount at /app/storage is
+# owned by somebody else's uid and the container cannot write a cover image into it.
+# 1000:1000 is the first ordinary user on a Debian, Ubuntu or Arch install, which makes
+# the common case work with no chown by hand. That is the whole reason for moving off
+# www-data; nothing here wants a *particular* user, only one the host agrees with.
+#
+# Build args rather than fixed values so an operator building their own image can bake in
+# whatever their host uses:
+#
+#   docker build --target prod --build-arg UID=1500 --build-arg GID=1500 -t ytsummarise .
+#
+# Anyone running the PUBLISHED image changes it at run time instead, with compose's
+# `user:` key - see compose.yml, which reads PUID and PGID for exactly that and explains
+# why it is not the linuxserver.io root-then-drop entrypoint.
+#
+# Declared here, below every expensive layer above, so changing either one does not
+# reinstall the extensions or yt-dlp.
+ARG UID=1000
+ARG GID=1000
+
+# -D for no password and no ageing; the login shell is nologin because nothing ever signs
+# in as this account. The home directory is not decoration: HOME is where yt-dlp keeps its
+# player cache, and without a writable one every metadata lookup in the horizon container
+# starts by failing to write it.
+#
+# A UID or GID already taken in the base image (82 is www-data's) fails the build here
+# rather than quietly producing an image with two names for one id.
+RUN addgroup -g "${GID}" app \
+    && adduser -u "${UID}" -G app -h /home/app -s /sbin/nologin -D app
+
+COPY --from=vendor --chown=${UID}:${GID} /app /app
+COPY --from=assets --chown=${UID}:${GID} /app/public/build /app/public/build
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/app-entrypoint.sh
 
 # /data and /config are Caddy's storage (XDG_DATA_HOME and XDG_CONFIG_HOME in the base
 # image) and are root-owned; without this the unprivileged process cannot start. The
 # storage tree is recreated because .dockerignore strips its contents, and it is chowned
 # so the named volume mounted over it inherits writable ownership on first use.
+#
+# g+rwX on top of the chown is what makes an override survive a NAMED volume. Docker
+# copies the image's ownership into an empty named volume once, at first mount, and never
+# again - so `user: "1500:1000"` against a volume created at 1000:1000 can only write if
+# the group can. X rather than x so the bit lands on directories and on files that are
+# already executable, and not on every .php file in the tree.
 RUN mkdir -p \
         /app/storage/framework/cache \
         /app/storage/framework/sessions \
         /app/storage/framework/views \
         /app/storage/logs \
         /app/bootstrap/cache \
-    && chown -R www-data:www-data /app/storage /app/bootstrap/cache /data /config
+    && chown -R "${UID}:${GID}" /app/storage /app/bootstrap/cache /data /config \
+    && chmod -R g+rwX /app/storage /app/bootstrap/cache /data /config /home/app
 
 # 8080, not 80: a port above 1024 needs no capability, which is what lets compose run
 # this container with `cap_drop: ALL` and nothing added back. Traefik's
@@ -201,7 +239,10 @@ RUN mkdir -p \
 ENV SERVER_NAME=":8080" \
     SERVER_ROOT="/app/public"
 
-USER www-data
+# Numeric rather than `USER app`, so the image declares an id a host can reason about
+# instead of a name that only means something inside it. Both forms are the same process
+# either way; this one matches what `docker inspect` and compose's `user:` speak.
+USER ${UID}:${GID}
 EXPOSE 8080
 
 ENTRYPOINT ["app-entrypoint.sh"]
