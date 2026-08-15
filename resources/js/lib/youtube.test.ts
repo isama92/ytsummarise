@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractVideoId } from './youtube';
+import { extractVideoId, watchUrl } from './youtube';
 
 /*
  * This function alone decides which video the backend is asked about. The server checks
@@ -100,6 +100,26 @@ describe('extractVideoId', () => {
     it('keeps the id exactly, including its case and punctuation', () => {
         expect(extractVideoId('https://youtu.be/aB3-_dEfGh1')).toBe(
             'aB3-_dEfGh1',
+        );
+    });
+});
+
+describe('watchUrl', () => {
+    it('builds the canonical watch url for an id', () => {
+        expect(watchUrl(ID)).toBe(`https://youtube.com/watch?v=${ID}`);
+    });
+
+    /*
+     * The two halves of this file are each other's inverse for anything the page renders a
+     * link for, so a change to either that broke that pairing would be worth knowing about.
+     */
+    it('produces something extractVideoId reads back as the same id', () => {
+        expect(extractVideoId(watchUrl(ID))).toBe(ID);
+    });
+
+    it('does not mangle the punctuation in an id', () => {
+        expect(watchUrl('aB3-_dEfGh1')).toBe(
+            'https://youtube.com/watch?v=aB3-_dEfGh1',
         );
     });
 });

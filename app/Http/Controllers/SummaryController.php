@@ -8,10 +8,13 @@ use App\Actions\SummariseVideo;
 use App\Enums\SummaryStatus;
 use App\Http\Requests\SummaryRequest;
 use App\Models\Summary;
+use App\Services\YouTube\Actions\FetchCover;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SummaryController extends Controller
 {
@@ -36,6 +39,34 @@ class SummaryController extends Controller
     public function show(Summary $summary): Response
     {
         return $this->page($summary);
+    }
+
+    /**
+     * The video's cover image, straight off the disk.
+     *
+     * Streamed through the application rather than served as a static file, which is the whole
+     * reason the video-covers disk has no url of its own: this route is inside the auth group,
+     * so an image is exactly as reachable as the summary it belongs to and no more.
+     *
+     * A row with no cover 404s rather than answering with a placeholder. Nothing asks for one
+     * blindly - the page is told whether there is an image before it renders an img at all -
+     * so reaching here for a file that is not there means a cover deleted underneath a page
+     * that was already open, and a 404 is what that is.
+     */
+    public function cover(Summary $summary): StreamedResponse
+    {
+        $disk = Storage::disk(FetchCover::DISK);
+
+        abort_unless($disk->exists($summary->file_name), 404);
+
+        return $disk->response($summary->file_name, headers: [
+            /*
+             * Private because the route is behind authentication and a shared cache must not
+             * hold it, and long because the content behind this url cannot change: the uuid
+             * names one row, a row names one video, and a video's cover is fetched once.
+             */
+            'Cache-Control' => 'private, max-age=31536000, immutable',
+        ]);
     }
 
     /**
@@ -181,6 +212,24 @@ class SummaryController extends Controller
                  * queue and being worked on. The page says which; the wording lives there.
                  */
                 'startedAt' => $summary->started_at?->toIso8601String(),
+
+                /*
+                 * Where the video's cover image is, or null when there is not one to show:
+                 * an older row nothing has backfilled, a video whose thumbnail could not be
+                 * fetched, or an attempt that has not got past step one yet.
+                 *
+                 * Asked of the disk rather than assumed from the status, because none of the
+                 * three cases above is visible in a column and a url handed over for a file
+                 * that is not there is a broken image on the page. A local stat is cheap
+                 * enough for the two second poll.
+                 *
+                 * A resolved url rather than a flag the page turns into one, which would mean
+                 * sending the uuid as a prop of its own for no other purpose than to rebuild
+                 * what the server already knows.
+                 */
+                'coverUrl' => Storage::disk(FetchCover::DISK)->exists($summary->file_name)
+                    ? route('summaries.cover', $summary)
+                    : null,
             ] : null,
         ]);
     }

@@ -144,7 +144,7 @@ class SummariseVideo
     {
         $tags = [self::class, 'summary:'.$summaryId];
 
-        $videoId = Summary::query()->whereKey($summaryId)->value('video_id');
+        $videoId = Summary::whereKey($summaryId)->value('video_id');
 
         /* Absent only if the row has gone between dispatch and here, which is not worth failing over. */
         if (is_string($videoId)) {

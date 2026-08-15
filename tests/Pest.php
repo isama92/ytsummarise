@@ -2,8 +2,10 @@
 
 declare(strict_types=1);
 
+use App\Services\YouTube\Actions\FetchCover;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Saloon\Config;
 use Tests\TestCase;
 
@@ -32,10 +34,18 @@ pest()->extend(TestCase::class)
      * Illuminate's http client at all - it has its own sender - so Http::fake() and
      * Http::preventStrayRequests() see nothing a connector sends, and Saloon's own guard sees
      * nothing Http:: sends. The lookup uses Saloon; anything else added later may not.
+     *
+     * The cover disk is faked for every test rather than by the tests that use it, for the
+     * same reason as the two guards above: the cost of forgetting is silent. Summarising a
+     * video writes an image, so without this the suite would leave a jpeg in the real
+     * storage/app/video-covers for every video it ever pretended to summarise, and a test
+     * asserting a cover is absent would pass or fail on what an earlier run left behind.
+     * Storage::fake points the disk at a temporary directory and empties it each time.
      */
     ->beforeEach(function (): void {
         Http::preventStrayRequests();
         Config::preventStrayRequests();
+        Storage::fake(FetchCover::DISK);
     })
     ->in('Feature');
 

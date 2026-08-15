@@ -9,6 +9,7 @@ const summary = (attributes: Partial<Summary> = {}): Summary => ({
     error: null,
     requestedAt: '2026-08-12T09:00:00+00:00',
     startedAt: null,
+    coverUrl: null,
     ...attributes,
 });
 

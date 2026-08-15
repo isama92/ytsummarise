@@ -81,10 +81,15 @@ services:
       - "traefik.http.services.ytsummarise.loadbalancer.server.port=8080"
 
     volumes:
-      # Only really needed for storage/app (user uploads). Logs go to stdout and the
-      # cache, session and queue drivers are all Redis, so the framework writes very
-      # little here. The volume inherits www-data ownership from the image on first
-      # mount, so there is no chown to do by hand.
+      # Only really needed for storage/app, which is where video cover images are
+      # written: one jpeg per summary, fetched once by the summarising chain and served
+      # from here on every page view. Logs go to stdout and the cache, session and queue
+      # drivers are all Redis, so the framework writes very little else.
+      #
+      # The same volume is mounted in horizon and scheduler below, which is what makes
+      # this work: a cover is written by a worker and read by the web container, and
+      # summaries:prune deletes it from a third. The volume inherits www-data ownership
+      # from the image on first mount, so there is no chown to do by hand.
       - storage:/app/storage
 
     # The image runs unprivileged as www-data on a port above 1024, so it needs no

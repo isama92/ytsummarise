@@ -86,4 +86,14 @@ export type Summary = {
      * both are pending.
      */
     startedAt: string | null;
+
+    /**
+     * Where the video's cover image is, or null when there is none to show.
+     *
+     * The server checks the disk before sending this, so a url here means there really is a
+     * file behind it. Null covers three different things and the page treats them alike: an
+     * older row created before covers existed, a thumbnail that could not be fetched, and an
+     * attempt that has not got past its first step yet.
+     */
+    coverUrl: string | null;
 };

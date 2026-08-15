@@ -144,7 +144,7 @@ test('the claim still matches the row after a real round trip', function (): voi
     [, $restoredClaim] = $restored->parameters();
 
     expect($restoredClaim)->toBe($claim)
-        ->and(Summary::query()->whereKey($summary->id)->where('claim', $restoredClaim)->exists())->toBeTrue();
+        ->and(Summary::whereKey($summary->id)->where('claim', $restoredClaim)->exists())->toBeTrue();
 });
 
 /*

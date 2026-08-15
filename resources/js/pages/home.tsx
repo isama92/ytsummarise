@@ -1,6 +1,6 @@
 import type { FormComponentRef } from '@inertiajs/core';
 import { Form, Head, usePage, usePoll } from '@inertiajs/react';
-import { ArrowUp, ClipboardPaste } from 'lucide-react';
+import { ArrowUp, ClipboardPaste, ExternalLink } from 'lucide-react';
 import {
     useCallback,
     useEffect,
@@ -19,7 +19,7 @@ import { useTranslate } from '@/hooks/use-translate';
 import { elapsedSince } from '@/lib/elapsed';
 import { errorKeyOf, stageKeyOf } from '@/lib/summary';
 import { cn } from '@/lib/utils';
-import { extractVideoId } from '@/lib/youtube';
+import { extractVideoId, watchUrl } from '@/lib/youtube';
 import type { Summary, SummaryOutline, SummarySections } from '@/types';
 
 type HomeProps = {
@@ -172,6 +172,74 @@ function SummaryPoll() {
     usePoll(2000, { only: ['summary'] });
 
     return null;
+}
+
+/**
+ * The video's cover image, as something to click.
+ *
+ * Hidden from assistive technology and taken out of the tab order, which together are what
+ * make it decoration rather than a second link. It goes exactly where the link below the
+ * title goes, and it says nothing the title does not, so announcing it would be one more
+ * thing to tab past on the way to the summary and one more "Watch on YouTube" to hear.
+ * alt="" rather than a string in lang/en for the same reason: there is nothing to describe.
+ * aria-hidden on something focusable would be wrong, which is what the tabIndex is for.
+ *
+ * A fixed 16:9 box whatever arrives. YouTube has a 1280x720 thumbnail for most videos and a
+ * 480x360 one for the rest, so without this the page would be a different shape depending on
+ * how old the video was; object-cover crops the 4:3 fallback rather than letterboxing it. The
+ * aspect ratio also reserves the space before the image loads, so nothing below it jumps.
+ */
+function VideoCover({
+    videoId,
+    coverUrl,
+}: {
+    videoId: string;
+    coverUrl: string;
+}) {
+    return (
+        <a
+            href={watchUrl(videoId)}
+            target="_blank"
+            rel="noreferrer"
+            aria-hidden="true"
+            tabIndex={-1}
+            className="mb-4 block overflow-hidden rounded-lg border"
+        >
+            <img
+                src={coverUrl}
+                alt=""
+                className="aspect-video w-full bg-muted object-cover transition-opacity hover:opacity-90"
+            />
+        </a>
+    );
+}
+
+/**
+ * Back to the video itself.
+ *
+ * A plain anchor and never an Inertia Link: this leaves the application entirely, and an
+ * Inertia visit is an XHR that would either trip CORS or receive HTML it refuses to parse.
+ * The same reason the sign-in control is one; see .ai/rules/pages-auth.md.
+ *
+ * Rendered whether or not there is a cover above it, because it is the only one of the two
+ * that is always possible - a link needs the id the page already has, while an image needs a
+ * download that may not have happened - and because it is the one a screen reader hears.
+ */
+function WatchLink({ videoId }: { videoId: string }) {
+    const t = useTranslate();
+
+    return (
+        <a
+            href={watchUrl(videoId)}
+            target="_blank"
+            rel="noreferrer"
+            className="mb-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            data-test="watch-link"
+        >
+            <ExternalLink className="size-3.5" aria-hidden="true" />
+            {t('summaries.actions.watch')}
+        </a>
+    );
 }
 
 /**
@@ -716,6 +784,25 @@ export default function Home({ videoId, summary }: HomeProps) {
                                              * allowed to name - none of which suits the
                                              * one heading that says what the page is.
                                              */}
+                                            {/*
+                                             * Above the title rather than below it, so the
+                                             * block reads the way a video does: the picture
+                                             * says which one this is before the words do.
+                                             * Both of these need the id, which the server
+                                             * sends alongside every summary - the check is
+                                             * for the type rather than for a case that
+                                             * happens.
+                                             */}
+                                            {videoId !== null &&
+                                                summary.coverUrl !== null && (
+                                                    <VideoCover
+                                                        videoId={videoId}
+                                                        coverUrl={
+                                                            summary.coverUrl
+                                                        }
+                                                    />
+                                                )}
+
                                             {summary.title != null && (
                                                 <h2
                                                     className="mb-4 text-xl font-medium text-balance"
@@ -723,6 +810,10 @@ export default function Home({ videoId, summary }: HomeProps) {
                                                 >
                                                     {summary.title}
                                                 </h2>
+                                            )}
+
+                                            {videoId !== null && (
+                                                <WatchLink videoId={videoId} />
                                             )}
 
                                             <SummaryOutlineView

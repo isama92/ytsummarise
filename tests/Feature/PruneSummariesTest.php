@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 use App\Console\Commands\PruneSummaries;
 use App\Models\Summary;
+use App\Services\YouTube\Actions\FetchCover;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * A summary last asked for a given number of days ago.
@@ -19,6 +21,67 @@ function summaryRequestedDaysAgo(int $days): Summary
     return Summary::factory()->create(['requested_at' => Date::now()->subDays($days)]);
 }
 
+/*
+ * The cover image is the one part of a summary that does not live in the row, so it is the one
+ * part deleting the row would not take with it.
+ *
+ * Nothing else would ever remove it either: a file is named for its row's uuid, so a row deleted
+ * without its image leaves a file nothing can identify as unreachable. That is why this command
+ * chunks rather than issuing one mass delete - the image has to go first, or it never goes.
+ */
+test('a pruned summary takes its cover image with it', function (): void {
+    $old = summaryRequestedDaysAgo(config()->integer('summaries.retention_days') + 1);
+    $recent = summaryRequestedDaysAgo(1);
+
+    $disk = Storage::disk(FetchCover::DISK);
+
+    $disk->put($old->file_name, 'the old cover');
+    $disk->put($recent->file_name, 'the recent cover');
+
+    $this->artisan('summaries:prune')->assertSuccessful();
+
+    $disk->assertMissing($old->file_name);
+    $disk->assertExists($recent->file_name);
+});
+
+/*
+ * A row whose cover was never fetched, which is most of them until the backfill has run. Deleting
+ * a file that is not there must not be an error, or retention stops the day it meets one.
+ */
+test('a pruned summary with no cover is deleted anyway', function (): void {
+    $old = summaryRequestedDaysAgo(config()->integer('summaries.retention_days') + 1);
+
+    $this->artisan('summaries:prune')
+        ->expectsOutputToContain('Pruned 1 summary')
+        ->assertSuccessful();
+
+    expect(Summary::find($old->id))->toBeNull();
+});
+
+/*
+ * More rows than one chunk holds, because the chunking is new and it is what deleting the files
+ * costs. A chunk is deleted immediately after its own files, and chunkById walks forward from the
+ * last id it saw, so the rows behind it being gone is not a problem - but a loop that reads a
+ * page it has already deleted, or stops after the first one, would be.
+ */
+test('every summary past the window is pruned, however many there are', function (): void {
+    $days = config()->integer('summaries.retention_days') + 1;
+
+    $old = Summary::factory()->count(30)
+        ->create(['requested_at' => Date::now()->subDays($days)]);
+
+    foreach ($old as $summary) {
+        Storage::disk(FetchCover::DISK)->put($summary->file_name, 'a cover');
+    }
+
+    $this->artisan('summaries:prune')
+        ->expectsOutputToContain('Pruned 30 summaries')
+        ->assertSuccessful();
+
+    expect(Summary::count())->toBe(0)
+        ->and(Storage::disk(FetchCover::DISK)->allFiles())->toBeEmpty();
+});
+
 test('a summary past the retention window is deleted', function (): void {
     Log::spy();
 
@@ -29,8 +92,8 @@ test('a summary past the retention window is deleted', function (): void {
         ->expectsOutputToContain('Pruned 1 summary')
         ->assertSuccessful();
 
-    expect(Summary::query()->find($old->id))->toBeNull()
-        ->and(Summary::query()->find($recent->id))->not->toBeNull();
+    expect(Summary::find($old->id))->toBeNull()
+        ->and(Summary::find($recent->id))->not->toBeNull();
 
     Log::shouldHaveReceived('info')->once();
 });
@@ -43,11 +106,11 @@ test('a summary past the retention window is deleted', function (): void {
 test('the transcript goes with it', function (): void {
     summaryRequestedDaysAgo(config()->integer('summaries.retention_days') + 1);
 
-    expect(Summary::query()->whereNotNull('transcript')->count())->toBe(1);
+    expect(Summary::whereNotNull('transcript')->count())->toBe(1);
 
     $this->artisan('summaries:prune')->assertSuccessful();
 
-    expect(Summary::query()->whereNotNull('transcript')->count())->toBe(0);
+    expect(Summary::whereNotNull('transcript')->count())->toBe(0);
 });
 
 /*
@@ -59,7 +122,7 @@ test('the window is where it says it is', function (int $days, bool $deleted): v
 
     $this->artisan('summaries:prune')->assertSuccessful();
 
-    expect(Summary::query()->count())->toBe($deleted ? 0 : 1);
+    expect(Summary::count())->toBe($deleted ? 0 : 1);
 })->with([
     'a day old' => [1, false],
     'a day inside the window' => [6, false],
@@ -80,7 +143,7 @@ test('asking for a video again renews its retention', function (): void {
 
     $this->artisan('summaries:prune')->assertSuccessful();
 
-    expect(Summary::query()->find($summary->id))->not->toBeNull();
+    expect(Summary::find($summary->id))->not->toBeNull();
 });
 
 /*
@@ -95,7 +158,7 @@ test('an ancient pending summary is not kept out of politeness', function (): vo
 
     $this->artisan('summaries:prune')->assertSuccessful();
 
-    expect(Summary::query()->count())->toBe(0);
+    expect(Summary::count())->toBe(0);
 });
 
 test('a run with nothing to prune says so and logs nothing', function (): void {
@@ -107,7 +170,7 @@ test('a run with nothing to prune says so and logs nothing', function (): void {
         ->expectsOutputToContain('Nothing to prune.')
         ->assertSuccessful();
 
-    expect(Summary::query()->count())->toBe(1);
+    expect(Summary::count())->toBe(1);
 
     Log::shouldNotHaveReceived('info');
 });
@@ -161,7 +224,7 @@ test('zero switches retention off', function (): void {
         ->expectsOutputToContain('Retention is switched off')
         ->assertSuccessful();
 
-    expect(Summary::query()->count())->toBe(1);
+    expect(Summary::count())->toBe(1);
 
     Log::shouldNotHaveReceived('info');
 });

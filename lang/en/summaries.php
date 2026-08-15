@@ -25,7 +25,21 @@ return [
     'actions' => [
         'paste' => 'Paste a link and summarise it',
         'submit' => 'Summarise this video',
+
+        /*
+         * On a link that leaves the application, so it says where it goes. "Watch" alone
+         * would be the same words as a play button on a video embedded here, which this
+         * deliberately is not.
+         */
+        'watch' => 'Watch on YouTube',
     ],
+
+    /*
+     * There is deliberately no string for the cover image's alt text. The image is decorative:
+     * it carries nothing the title beside it does not already say, and the link it sits inside
+     * goes where the one below it goes. So it is alt="" and hidden from assistive technology
+     * rather than announced as a second link with almost the same name; see pages/home.tsx.
+     */
 
     /*
      * Where an attempt has got to, in a word. Queued and processing are one status on the

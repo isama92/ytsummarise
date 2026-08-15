@@ -14,6 +14,7 @@ use App\Services\Ai\Agents\TranslateSummary;
 use App\Services\YouTube\Requests\OembedRequest;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -233,7 +234,15 @@ test('a retry after a failed model call does not fetch the transcript again', fu
     expect($summary->fresh()?->status)->toBe(SummaryStatus::Ready);
 
     Process::assertNothingRan();
-    Http::assertNothingSent();
+
+    /*
+     * The caption endpoint specifically, rather than assertNothingSent(). Step one fetches the
+     * video's cover over the same client, and it does so on a retry too - the row is new here,
+     * so there is no image on the disk to skip. What this test is about is the transcript, and
+     * naming it is what keeps the assertion about that rather than about how many other things
+     * happen to use http.
+     */
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'timedtext'));
 
     /* And read as Dutch, so it is still translated rather than taken for English. */
     ExtractIdeas::assertPrompted('The words from the attempt before.');
@@ -267,6 +276,13 @@ test('a video the lookup will not name is still summarised', function (): void {
     withoutYouTubeKey();
 
     Saloon::fake([OembedRequest::class => MockResponse::make(status: 401)]);
+
+    /*
+     * Arranged by hand rather than through fakeYouTube(), because the whole point of this test
+     * is an oEmbed answer that helper does not give. The cover still has to be faked: a video
+     * nobody is allowed to name still has a thumbnail, and the suite forbids a stray request.
+     */
+    fakeCover();
 
     fakeTranscript();
     fakeSummariser();

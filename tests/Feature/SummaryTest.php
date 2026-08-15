@@ -9,9 +9,11 @@ use App\Enums\SummaryStatus;
 use App\Jobs\ActionJob;
 use App\Models\Summary;
 use App\Models\User;
+use App\Services\YouTube\Actions\FetchCover;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia;
 use Saloon\Laravel\Facades\Saloon;
 use Spatie\QueueableAction\Testing\QueueableActionFake;
@@ -543,5 +545,73 @@ test('guests cannot read a summary', function (): void {
     $summary = Summary::factory()->create();
 
     $this->get(route('summaries.show', $summary))
+        ->assertRedirect(route('login'));
+});
+
+/*
+ * The cover image, which is the one part of a summary that does not live in the row.
+ */
+
+test('the page is given a url for the cover when there is one', function (): void {
+    $summary = Summary::factory()->create();
+
+    Storage::disk(FetchCover::DISK)->put($summary->file_name, 'the cover');
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('summaries.show', $summary))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->where('summary.coverUrl', route('summaries.cover', $summary)),
+        );
+});
+
+/*
+ * Asked of the disk rather than assumed from the status, because none of the three ways to have
+ * no cover is visible in a column: an older row nothing has backfilled, a thumbnail that could
+ * not be fetched, and an attempt that has not got past step one. A url handed over for a file
+ * that is not there would be a broken image on the page.
+ */
+test('the page is given no cover url when there is no cover', function (): void {
+    $summary = Summary::factory()->create();
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('summaries.show', $summary))
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page): AssertableInertia => $page
+            ->where('summary.coverUrl', null),
+        );
+});
+
+test('a cover is served from the disk', function (): void {
+    $summary = Summary::factory()->create();
+
+    Storage::disk(FetchCover::DISK)->put($summary->file_name, COVER_BYTES);
+
+    $response = $this->actingAs(User::factory()->create())
+        ->get(route('summaries.cover', $summary))
+        ->assertOk();
+
+    expect($response->streamedContent())->toBe(COVER_BYTES);
+});
+
+test('a summary with no cover has nothing to serve', function (): void {
+    $summary = Summary::factory()->create();
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('summaries.cover', $summary))
+        ->assertNotFound();
+});
+
+/*
+ * The reason the video-covers disk has no url of its own and nothing in filesystems' links: an
+ * image says which video somebody summarised just as plainly as the summary does, and a page
+ * behind a sign-in whose pictures are not is not behind a sign-in.
+ */
+test('guests cannot read a cover', function (): void {
+    $summary = Summary::factory()->create();
+
+    Storage::disk(FetchCover::DISK)->put($summary->file_name, COVER_BYTES);
+
+    $this->get(route('summaries.cover', $summary))
         ->assertRedirect(route('login'));
 });
