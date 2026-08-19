@@ -13,9 +13,9 @@
         "ext-redis": "*",
         "inertiajs/inertia-laravel": "^3.3.1",
         "laravel/ai": "^0.10.3",
-        "laravel/framework": "^13.25",
+        "laravel/framework": "^13.26.1",
         "laravel/horizon": "^5.48.3",
-        "laravel/socialite": "^5.29",
+        "laravel/socialite": "^5.30",
         "laravel/wayfinder": "^0.1.21",
         "saloonphp/laravel-plugin": "^4.3",
         "saloonphp/saloon": "^4.0",
@@ -27,17 +27,17 @@
         "driftingly/rector-laravel": "^2.5",
         "fakerphp/faker": "^1.24.1",
         "larastan/larastan": "^3.10",
-        "laravel/boost": "^2.5.3",
+        "laravel/boost": "^2.5.5",
         "laravel/pail": "^1.2.7",
         "laravel/pao": "^1.1.4",
         "laravel/pint": "^1.30.5",
         "laravel/tinker": "^3.0.2",
-        "mockery/mockery": "^1.6.12",
+        "mockery/mockery": "^1.6.14",
         "nunomaduro/collision": "^8.9.5",
         "pestphp/pest": "^5.1.1",
         "pestphp/pest-plugin-laravel": "^5.0.1",
         "pestphp/pest-plugin-rector": "^5.0.3",
-        "rector/rector": "^2.6.2"
+        "rector/rector": "^2.6.3"
     },
     "autoload": {
         "psr-4": {
