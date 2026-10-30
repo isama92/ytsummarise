@@ -23,9 +23,11 @@ class User extends Authenticatable
     use HasFactory, Notifiable;
 
     /**
-     * There is no password column, and strict mode turns the inherited read of
-     * $this->password into a MissingAttributeException. An empty string tells
-     * SessionGuard::login() there is no password hash to keep in the session.
+     * There is no password column, and preventAccessingMissingAttributes(), which
+     * AppServiceProvider enables in every environment including production, turns
+     * the inherited read of $this->password into a MissingAttributeException. An
+     * empty string tells SessionGuard::login() there is no password hash to keep
+     * in the session.
      */
     public function getAuthPassword(): string
     {
